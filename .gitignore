@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# API Keys (NEVER COMMIT!)
+.picasso_keys.json
+.gg_keys.json
+
+# Trading Data
+positions.json
+trades.csv
+stats.json
+license.json
+
+# Logs
+*.log

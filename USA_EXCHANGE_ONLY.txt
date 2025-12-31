@@ -1,0 +1,63 @@
+╔══════════════════════════════════════════════════════════════════╗
+║                                                                  ║
+║  ██╗   ██╗███████╗ █████╗     ███████╗██╗  ██╗ ██████╗██╗  ██╗ ║
+║  ██║   ██║██╔════╝██╔══██╗    ██╔════╝╚██╗██╔╝██╔════╝██║  ██║ ║
+║  ██║   ██║███████╗███████║    █████╗   ╚███╔╝ ██║     ███████║ ║
+║  ██║   ██║╚════██║██╔══██║    ██╔══╝   ██╔██╗ ██║     ██╔══██║ ║
+║  ╚██████╔╝███████║██║  ██║    ███████╗██╔╝ ██╗╚██████╗██║  ██║ ║
+║   ╚═════╝ ╚══════╝╚═╝  ╚═╝    ╚══════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝ ║
+║                                                                  ║
+║                        ONLY - FOREVER                            ║
+║                                                                  ║
+╚══════════════════════════════════════════════════════════════════╝
+
+🇺🇸 CRITICAL REQUIREMENT - READ THIS FIRST! 🇺🇸
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  USER IS IN THE UNITED STATES!
+
+  ONLY USE THESE EXCHANGES:
+
+    ✅ Binance US (binanceus)
+    ✅ Kraken US
+    ✅ Coinbase Pro / Advanced Trade
+    ✅ Gemini
+
+  NEVER USE:
+
+    ❌ Binance.com (international - BLOCKED in USA)
+    ❌ Binance testnet (geo-restricted)
+    ❌ Any international exchange
+    ❌ Any futures/derivatives exchange
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️  COMPLIANCE REQUIREMENTS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ✅ SPOT TRADING ONLY (no futures, no derivatives)
+  ✅ LONG POSITIONS ONLY (no shorting)
+  ✅ NO LEVERAGE
+  ✅ US EXCHANGE ONLY
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 FOR PAPER MODE TESTING:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  DO NOT USE SANDBOX/TESTNET MODE!
+
+  Binance US does not have a public testnet.
+  Use real API with paper mode flag instead.
+
+  Paper mode = Read-only, no actual orders placed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔒 THIS IS HARDCODED - DO NOT CHANGE!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  All trading bots are configured for US exchanges ONLY.
+  Any deviation from this is a BUG and must be fixed immediately.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
