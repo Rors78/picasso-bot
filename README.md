@@ -137,8 +137,14 @@ python picasso.py
 
 ### Paper Trading (Safe Mode - Default)
 
-```bash
+**Windows:**
+```powershell
 python picasso.py
+```
+
+**Linux/macOS:**
+```bash
+python3 picasso.py
 ```
 
 Bot will:
@@ -268,6 +274,8 @@ Just like Pablo Picasso created masterpieces with simple, clean lines - this bot
 **Simple = Beautiful = Profitable** 🎨
 
 ---
+
+> **API keys are optional.** Paper/read-only mode uses the public REST API — no account or key required. Keys are only needed for live order execution.
 
 **⚠️ CURRENT STATUS: AWAITING USER'S EXACT FIBONACCI LEVELS**
 
