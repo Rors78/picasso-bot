@@ -215,7 +215,15 @@ function render(s) {
 
   const st = s.stats || {}, up = Math.floor((s.now - s.started) / 60);
   const wr = st.trades ? (st.wins / st.trades * 100).toFixed(1) + `% (${st.wins}W/${st.losses}L)` : "no trades yet";
-  $("stats").innerHTML = [
+  const rk = s.risk || {};
+  const riskRows = rk.open ? [
+    ["— Open Risk —", ""],
+    ["Positions", `${rk.open} <span class="dim">($${Math.round(rk.notional).toLocaleString()} notional)</span>`],
+    ["Margin posted", "$" + Math.round(rk.margin).toLocaleString()],
+    ["If all stops hit", `<span class="red">${usd(rk.all_stops)}</span>`],
+    ["If all liqs hit", `<span class="red">${usd(rk.all_liqs)}</span>`],
+  ] : [];
+  $("stats").innerHTML = [...riskRows.map(([k, v]) => [k === "— Open Risk —" ? `<span class="red">${k}</span>` : k, v]),
     ["Uptime", `${Math.floor(up / 60)}h ${String(up % 60).padStart(2, "0")}m`], ["Scans", s.scans],
     ["Entries", s.session_entries], ["Session P/L", `<span class="${s.session_pl >= 0 ? "green" : "red"}">${usd(s.session_pl)}</span>`],
     ["Closed trades", st.trades || 0], ["Win rate", wr],

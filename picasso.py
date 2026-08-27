@@ -694,6 +694,25 @@ def build_status(sym, ss):
 
     return Panel(grid, title=title, border_style=style, box=box.ROUNDED)
 
+def portfolio_risk(state):
+    """Aggregate live risk across open positions: what one bad candle costs."""
+    r = {"open": 0, "notional": 0.0, "margin": 0.0, "upnl": 0.0,
+         "all_stops": 0.0, "all_liqs": 0.0}
+    for sym, d in state["syms"].items():
+        pos = d.get("position")
+        if not pos:
+            continue
+        p = d.get("price") or pos["entry"]
+        rem = pos.get("remaining", pos["size"])
+        lev = pos.get("leverage", 1.0)
+        r["open"] += 1
+        r["notional"] += p * rem
+        r["margin"] += pos["entry"] * rem / lev
+        r["upnl"] += (p - pos["entry"]) * rem
+        r["all_stops"] += (pos["stop_loss"] - pos["entry"]) * rem
+        r["all_liqs"] += (-pos["entry"] * rem / lev) if lev > 1 else (pos["stop_loss"] - pos["entry"]) * rem
+    return r
+
 def build_stats(state):
     stats = state.get("stats") or {"trades": 0, "wins": 0, "losses": 0, "gross_pl": 0.0}
     up = int(time.time() - state.get("started", time.time()))
@@ -710,6 +729,14 @@ def build_stats(state):
     spl = state.get("session_pl", 0.0)
     grid.add_row("Realized P/L", f"[{'bold green' if spl >= 0 else 'bold red'}]{spl:+,.2f} USD[/]")
 
+    risk = portfolio_risk(state)
+    if risk["open"]:
+        grid.add_row("[bold red]— Open Risk —[/]", "")
+        grid.add_row("Positions", f"{risk['open']}  [dim](${risk['notional']:,.0f} notional)[/]")
+        grid.add_row("Margin posted", f"${risk['margin']:,.0f}")
+        grid.add_row("If all stops hit", f"[bold red]{risk['all_stops']:+,.0f} USD[/]")
+        grid.add_row("If all liqs hit", f"[bold red]{risk['all_liqs']:+,.0f} USD[/]")
+
     grid.add_row("[bold cyan]— Lifetime —[/]", "")
     grid.add_row("Closed trades", str(stats["trades"]))
     wr = (stats["wins"] / stats["trades"] * 100) if stats["trades"] else None
@@ -717,8 +744,9 @@ def build_stats(state):
     gpl = stats["gross_pl"]
     grid.add_row("Gross P/L", f"[{'bold green' if gpl >= 0 else 'bold red'}]{gpl:+,.2f} USD[/]")
 
+    # Risk block replaces last-closes when positions are open (web shows both)
     closed = list(state.get("closed") or [])
-    if closed:
+    if closed and not risk["open"]:
         grid.add_row("[bold cyan]— Last closes —[/]", "")
         for c in closed[-3:][::-1]:
             style = "green" if c["pnl"] > 0 else "red"
@@ -763,8 +791,9 @@ def build_screen(state):
         right = [Layout(build_fib_table(hot, ss["fib"], ss.get("price")), name="fib", size=14),
                  Layout(build_status(hot, ss), name="status")]
         if body_h >= 30:
+            cap = 20 if portfolio_risk(state)["open"] else 15  # room for the risk block
             right.append(Layout(build_stats(state), name="stats",
-                                size=max(7, min(15, body_h - 27))))
+                                size=max(7, min(cap, body_h - 27))))
         layout["right"].split_column(*right)
     else:
         layout["right"].update(Panel(Align.center("[cyan]⏳ Fetching first candles from Kraken...[/]"),
@@ -1226,6 +1255,7 @@ def state_snapshot(state):
         "session_entries": state.get("session_entries", 0),
         "stats": state.get("stats"), "hot": hot_symbol(state),
         "min_range_pct": MIN_RANGE_PCT,
+        "risk": portfolio_risk(state),
         "equity": (state.get("equity") or [])[-200:],
         "closed": list(state.get("closed") or []),
         "events": [_strip_markup(e) for e in list(EVENTS)[:30]],
