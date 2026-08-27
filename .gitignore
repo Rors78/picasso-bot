@@ -15,3 +15,5 @@ license.json
 
 # Logs
 *.log
+picasso.err
+picasso.log

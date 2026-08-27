@@ -38,6 +38,7 @@ import os, sys, time, json, csv
 from pathlib import Path
 from datetime import datetime, timezone
 from statistics import mean
+from collections import deque
 
 import ccxt
 import pandas as pd
@@ -45,6 +46,10 @@ import numpy as np
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.layout import Layout
+from rich.live import Live
+from rich.text import Text
+from rich.align import Align
 from rich import box
 
 APP = "PICASSO Fibonacci Trader v1.0"
@@ -213,9 +218,11 @@ def check_pullback_entry(df, fib_levels):
     golden_zone = fib_levels["golden_zone"]  # 0.5
     stop_loss = fib_levels["stop_loss"]      # 0.618
 
-    # Tolerance for level detection
-    entry_tolerance = entry_level * 0.02  # 2% tolerance
-    golden_tolerance = golden_zone * 0.02
+    # Tolerance for level detection: 2% of the SWING RANGE, not of price.
+    # (2% of price at BTC levels is wider than the gap between fib levels,
+    # which made every candle low count as a gold-zone "touch".)
+    entry_tolerance = fib_levels["range"] * 0.02
+    golden_tolerance = fib_levels["range"] * 0.02
 
     # STEP 1: Check for DOUBLE BOTTOM at gold zone (0.5) in recent history
     recent_lows = df["low"].tail(15).astype(float)
@@ -260,8 +267,8 @@ def check_pullback_entry(df, fib_levels):
     # 6. Above stop loss ✓
     if (double_bottom_confirmed and recent_was_at_golden and at_entry_level and
         below_swing_high and bouncing_up and volume_ok and above_stop):
-        console.print("[bold yellow]🎯 DOUBLE BOTTOM at GOLD ZONE (0.5) confirmed![/bold yellow]")
-        console.print(f"[bold green]🚀 ENTRY at 0.382 level (${close_price:.2f})![/bold green]")
+        log_event("[bold yellow]🎯 DOUBLE BOTTOM at GOLD ZONE confirmed![/bold yellow]")
+        log_event(f"[bold green]🚀 ENTRY signal at {FIB_RETRACEMENT_ENTRY} level (${close_price:,.2f})![/bold green]")
         return True
 
     return False
@@ -321,57 +328,165 @@ def track_trade_profit(trade_profit, customer_id="default"):
             vendor_portion = share_amount - remaining_refund
             license_data["vendor_earnings"] += vendor_portion
 
-            console.print(f"[bold green]🎉 CUSTOMER BREAKEVEN ACHIEVED! Vendor earnings start now.[/bold green]")
+            log_event("[bold green]🎉 CUSTOMER BREAKEVEN ACHIEVED! Vendor earnings start now.[/bold green]")
         else:
             # All share goes to customer refund
             license_data["refund_progress"] += share_amount
-            console.print(f"[cyan]Refund progress: ${license_data['refund_progress']:.2f} / $100.00[/cyan]")
+            log_event(f"[cyan]Refund progress: ${license_data['refund_progress']:.2f} / $100.00[/cyan]")
     else:
         # Customer already recouped, all share goes to vendor
         license_data["vendor_earnings"] += share_amount
-        console.print(f"[bold green]💰 Vendor earnings: +${share_amount:.2f} (Total: ${license_data['vendor_earnings']:.2f})[/bold green]")
+        log_event(f"[bold green]💰 Vendor earnings: +${share_amount:.2f} (Total: ${license_data['vendor_earnings']:.2f})[/bold green]")
 
     save_json(LICENSE_FILE, license_data)
     return license_data
 
-# ========== DISPLAY ==========
+# ========== DISPLAY (full-screen Rich TUI) ==========
 
-def display_header():
-    """Display PICASSO header"""
-    console.clear()
-    console.print(Panel.fit(
-        f"[bold cyan]{APP}[/bold cyan]\n"
-        f"[white]Fibonacci Pullback Strategy - Automated Trading System[/white]\n"
-        f"[yellow]Mode: {'PAPER TRADING' if PAPER_MODE else 'LIVE TRADING'}[/yellow]",
-        border_style="cyan"
-    ))
+EVENTS = deque(maxlen=100)
 
-def display_fib_levels(fib_levels):
-    """Display current Fibonacci levels"""
-    table = Table(title="📐 Fibonacci Levels", box=box.ROUNDED, style="cyan")
-    table.add_column("Level", style="yellow")
-    table.add_column("Price", justify="right", style="green")
-    table.add_column("Description", style="white")
+def log_event(msg):
+    """Append a timestamped line to the on-screen event log."""
+    EVENTS.appendleft(f"[dim]{now_str()}[/dim] {msg}")
 
-    table.add_row("Swing High", f"${fib_levels['swing_high']:.2f}", "Recent high")
-    table.add_row("Swing Low", f"${fib_levels['swing_low']:.2f}", "Recent low")
-    table.add_row("", "", "")
-    table.add_row("Entry Level", f"${fib_levels['entry']:.2f}", f"{FIB_RETRACEMENT_ENTRY} retracement (ENTRY)")
-    table.add_row("Gold Zone", f"${fib_levels['golden_zone']:.2f}", f"{FIB_RETRACEMENT_GOLDEN_ZONE} retracement (double bounce)")
-    table.add_row("Stop Loss", f"${fib_levels['stop_loss']:.2f}", f"{FIB_RETRACEMENT_STOP_LOSS} retracement")
-    table.add_row("", "", "")
-    table.add_row("TP1 (GREEN)", f"${fib_levels['tp1']:.2f}", f"{FIB_EXTENSION_TP1} ext (swing high)")
-    table.add_row("TP2 (GREEN)", f"${fib_levels['tp2']:.2f}", f"{FIB_EXTENSION_TP2} ext (70% in 1hr)")
-    table.add_row("TP3", f"${fib_levels['tp3']:.2f}", f"{FIB_EXTENSION_TP3} ext (golden ratio)")
-    table.add_row("TP4", f"${fib_levels['tp4']:.2f}", f"{FIB_EXTENSION_TP4} ext (max extension)")
+def market_metrics(df, fib_levels):
+    """Display-only snapshot of the entry conditions (mirrors check_pullback_entry)."""
+    try:
+        vol_series = df["volume"].tail(20).astype(float)
+        avg_vol = float(vol_series.mean()) or 1.0
+        cur_vol = float(df.iloc[-1]["volume"])
+        golden = fib_levels["golden_zone"]
+        tol = fib_levels["range"] * 0.02  # must mirror check_pullback_entry's tolerance
+        lows = df["low"].tail(15).astype(float)
+        touches = sum(1 for lo in lows if abs(lo - golden) <= tol)
+        bouncing = float(df.iloc[-1]["close"]) > float(df.iloc[-2]["close"])
+        return {"vol_ratio": cur_vol / avg_vol, "touches": touches, "bouncing": bouncing}
+    except Exception:
+        return {"vol_ratio": 0.0, "touches": 0, "bouncing": False}
 
-    console.print(table)
+def build_header():
+    mode = "[bold black on green] PAPER [/]" if PAPER_MODE else "[bold white on red] LIVE [/]"
+    return Panel(
+        Align.center(
+            f"[bold cyan]🎨 {APP}[/]   [white]{SYMBOL} · {TIMEFRAME} · ${RISK_AMOUNT_USD:.0f} risk/trade[/]   {mode}"
+        ),
+        border_style="cyan", box=box.HEAVY,
+    )
+
+def build_fib_table(fib, price):
+    table = Table(box=box.ROUNDED, expand=True, border_style="cyan",
+                  title="📐 Fibonacci Ladder", title_style="bold cyan")
+    table.add_column("Level", style="yellow", no_wrap=True)
+    table.add_column("Price", justify="right", style="bold green", no_wrap=True)
+    table.add_column("Role", style="dim", no_wrap=True)  # no_wrap: wrapped rows pushed the lower half of the ladder off-screen
+    table.add_column("", no_wrap=True)
+
+    rows = [
+        (f"TP4  ({FIB_EXTENSION_TP4})", fib["tp4"], "max ext", "green"),
+        (f"TP3  ({FIB_EXTENSION_TP3})", fib["tp3"], "golden ratio", "green"),
+        (f"TP2  ({FIB_EXTENSION_TP2})", fib["tp2"], "70% in 1hr", "green"),
+        (f"TP1  ({FIB_EXTENSION_TP1})", fib["tp1"], "swing high", "green"),
+        ("Swing High", fib["swing_high"], "0.0 retrace", "white"),
+        (f"ENTRY ({FIB_RETRACEMENT_ENTRY})", fib["entry"], "🚀 entry", "bold cyan"),
+        (f"GOLD ZONE ({FIB_RETRACEMENT_GOLDEN_ZONE})", fib["golden_zone"], "🎯 dbl bottom", "bold yellow"),
+        (f"STOP ({FIB_RETRACEMENT_STOP_LOSS})", fib["stop_loss"], "🛑 stop", "bold red"),
+        ("Swing Low", fib["swing_low"], "1.0 retrace", "white"),
+    ]
+    nearest = None
+    if price:
+        nearest = min(range(len(rows)), key=lambda i: abs(rows[i][1] - price))
+    for i, (name, val, role, style) in enumerate(rows):
+        marker = "[bold magenta]◀── price[/]" if i == nearest else ""
+        table.add_row(f"[{style}]{name}[/]", f"${val:,.2f}", role, marker)
+    return table
+
+def build_status(state):
+    fib = state.get("fib")
+    price = state.get("price")
+    metrics = state.get("metrics") or {}
+    position = state.get("position")
+
+    grid = Table(box=None, expand=True, show_header=False, padding=(0, 1))
+    grid.add_column(style="white", no_wrap=True)
+    grid.add_column(justify="right")
+
+    src = "[green]● live[/]" if state.get("price_live") else "[yellow]● candle[/]"
+    grid.add_row("[bold]BTC Price[/]", f"[bold white]${price:,.2f}[/] {src}" if price else "—")
+
+    if fib and price:
+        for label, key in (("→ Entry", "entry"), ("→ Gold Zone", "golden_zone"), ("→ Stop", "stop_loss")):
+            delta = price - fib[key]
+            pct = delta / price * 100
+            color = "green" if delta >= 0 else "red"
+            grid.add_row(label, f"[{color}]{'+' if delta >= 0 else ''}{delta:,.2f}  ({pct:+.2f}%)[/]")
+
+    grid.add_row("", "")
+    touches = metrics.get("touches", 0)
+    t_style = "bold green" if touches >= 2 else "yellow"
+    grid.add_row("Gold-zone touches", f"[{t_style}]{touches}/2[/]")
+    vol = metrics.get("vol_ratio", 0.0)
+    v_style = "bold green" if vol >= VOLUME_CONFIRMATION else "yellow"
+    grid.add_row("Volume vs 20-avg", f"[{v_style}]{vol:.2f}x[/] [dim](need {VOLUME_CONFIRMATION}x)[/]")
+    grid.add_row("Bouncing up", "[bold green]YES[/]" if metrics.get("bouncing") else "[dim]no[/]")
+
+    if position:
+        upnl = (price - position["entry"]) * position["size"] if price else 0.0
+        u_style = "bold green" if upnl >= 0 else "bold red"
+        grid.add_row("", "")
+        grid.add_row("[bold magenta]POSITION[/]", "")
+        grid.add_row("Entry", f"${position['entry']:,.2f}")
+        grid.add_row("Size", f"{position['size']:.4f} BTC")
+        grid.add_row("Unrealized P/L", f"[{u_style}]{upnl:+,.2f} USD[/]")
+        tps = "  ".join(
+            f"[green]TP{i}✓[/]" if position.get(f"tp{i}_hit") else f"[dim]TP{i}·[/]"
+            for i in (1, 2, 3, 4)
+        )
+        grid.add_row("Targets", tps)
+        title, style = "📊 Market — POSITION OPEN", "magenta"
+    else:
+        title, style = "📊 Market — waiting for setup", "cyan"
+
+    return Panel(grid, title=title, border_style=style, box=box.ROUNDED)
+
+def build_footer(state):
+    remaining = state.get("countdown", 0)
+    mm, ss = divmod(max(0, remaining), 60)
+    body = Text.from_markup("\n".join(list(EVENTS)[:8]) or "[dim]no events yet[/]")
+    return Panel(
+        body,
+        title="🖊  Events",
+        subtitle=f"[bold cyan]next scan in {mm:02d}:{ss:02d}[/]  ·  [dim]scan every {SCAN_INTERVAL}s · Ctrl+C to stop[/]",
+        border_style="blue", box=box.ROUNDED,
+    )
+
+def build_screen(state):
+    layout = Layout()
+    layout.split_column(
+        Layout(build_header(), name="header", size=3),
+        Layout(name="body", ratio=2),
+        Layout(build_footer(state), name="footer", size=10),
+    )
+    fib = state.get("fib")
+    if fib:
+        layout["body"].split_row(
+            Layout(build_fib_table(fib, state.get("price")), name="fib"),
+            Layout(build_status(state), name="status"),
+        )
+    else:
+        layout["body"].update(Panel(Align.center("[cyan]⏳ Fetching first candles from Binance US...[/]"),
+                                    border_style="cyan"))
+    return layout
 
 # ========== EXCHANGE CONNECTION ==========
 
 def read_keys():
     if KEYS_FILE.exists():
         return load_json(KEYS_FILE, {})
+
+    if PAPER_MODE:
+        # Paper mode only reads public market data - no account needed
+        console.print("[yellow]No API keys found - paper mode, using public data only[/yellow]")
+        return {"apiKey": "", "secret": ""}
 
     console.print(Panel.fit(
         "[bold]Enter Binance.US API Keys[/bold]\n(saved to .picasso_keys.json)",
@@ -430,156 +545,120 @@ def connect_exchange(live=True):
 # ========== MAIN LOOP ==========
 
 def main():
-    """Main PICASSO trading loop"""
-
-    display_header()
-
-    console.print("\n[bold cyan]🎨 PICASSO Bot Starting...[/bold cyan]")
-    console.print(f"[yellow]Symbol: {SYMBOL}[/yellow]")
-    console.print(f"[yellow]Timeframe: {TIMEFRAME}[/yellow]")
-    console.print(f"[yellow]Risk per trade: ${RISK_AMOUNT_USD}[/yellow]")
-    console.print(f"[yellow]Mode: {'PAPER' if PAPER_MODE else 'LIVE'}[/yellow]\n")
+    """Main PICASSO trading loop - full-screen auto-fit Rich TUI"""
 
     # Connect to exchange
     try:
         ex = connect_exchange(live=not PAPER_MODE)
-        console.print("[green]✅ Connected to Binance US[/green]\n")
+        console.print("[green]✅ Connected to Binance US[/green]")
     except Exception as e:
         console.print(f"[red]❌ Exchange connection failed: {e}[/red]")
         return
 
     # Load existing position if any
     position = load_json(POS_FILE, None)
+    if position:
+        log_event(f"[magenta]Resumed open position (entry ${position['entry']:,.2f})[/magenta]")
+    log_event(f"[cyan]PICASSO online — watching {SYMBOL} {TIMEFRAME} for double bottom at gold zone[/cyan]")
 
-    console.print("[cyan]⏳ Monitoring for PICASSO setup...[/cyan]")
-    console.print("[dim]Waiting for pullback to gold zone (0.5), double bottom, then entry at 0.382...[/dim]\n")
+    state = {"fib": None, "price": None, "price_live": False, "metrics": None,
+             "position": position, "countdown": SCAN_INTERVAL}
 
-    cycle = 0
+    try:
+        with Live(build_screen(state), console=console, screen=True, refresh_per_second=4) as live:
+            while True:
+                try:
+                    # ---- SCAN: fetch 1h candles, recompute levels, run trade logic ----
+                    ohlcv = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=200)
+                    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
 
-    while True:
-        try:
-            cycle += 1
+                    swing_low, swing_high = find_swing_high_low(df)
 
-            # Fetch 1h candles
-            ohlcv = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=200)
-            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                    if swing_low is None or swing_high is None:
+                        log_event("[yellow]⚠ Not enough data for swing detection[/yellow]")
+                    else:
+                        fib_levels = calculate_fibonacci_levels(swing_low, swing_high)
+                        current_price = float(df.iloc[-1]["close"])
+                        state["fib"] = fib_levels
+                        state["price"] = current_price
+                        state["price_live"] = False
+                        state["metrics"] = market_metrics(df, fib_levels)
 
-            # Find swing high/low
-            swing_low, swing_high = find_swing_high_low(df)
+                        if position:
+                            entry = position["entry"]
+                            stop = position["stop_loss"]
 
-            if swing_low is None or swing_high is None:
-                console.print("[yellow]⚠ Not enough data for swing detection[/yellow]")
-                time.sleep(SCAN_INTERVAL)
-                continue
+                            for i in (1, 2, 3, 4):
+                                tp = position[f"tp{i}"]
+                                if current_price >= tp and not position.get(f"tp{i}_hit"):
+                                    profit = (current_price - entry) * position["size"]
+                                    log_event(f"[bold green]{'🎯' * i} TP{i} HIT! Profit: ${profit:,.2f}[/bold green]")
+                                    position[f"tp{i}_hit"] = True
+                                    track_trade_profit(profit)
+                                    save_json(POS_FILE, position)
+                                    if i == 4:
+                                        log_event("[bold magenta]🎨 PICASSO COMPLETE! All TPs hit, closing position.[/bold magenta]")
+                                        position = None
+                                        save_json(POS_FILE, None)
+                                        break
 
-            # Calculate Fibonacci levels
-            fib_levels = calculate_fibonacci_levels(swing_low, swing_high)
+                            # Stop loss check
+                            if position and current_price <= stop:
+                                loss = (entry - current_price) * position["size"]
+                                log_event(f"[bold red]🛑 STOP LOSS HIT! Loss: -${loss:,.2f}[/bold red]")
+                                position = None
+                                save_json(POS_FILE, None)
 
-            # Display levels periodically
-            if cycle % 5 == 1:
-                display_fib_levels(fib_levels)
+                        else:
+                            # No position - check for entry
+                            if check_pullback_entry(df, fib_levels):
+                                # Entry at the fib entry level (NOT current price!)
+                                entry_price = fib_levels["entry"]
+                                stop_loss = fib_levels["stop_loss"]
+                                position_size = calculate_position_size(entry_price, stop_loss, RISK_AMOUNT_USD)
 
-            current_price = float(df.iloc[-1]["close"])
+                                position = {
+                                    "entry": entry_price,
+                                    "size": position_size,
+                                    "stop_loss": stop_loss,
+                                    "tp1": fib_levels["tp1"],
+                                    "tp2": fib_levels["tp2"],
+                                    "tp3": fib_levels["tp3"],
+                                    "tp4": fib_levels["tp4"],
+                                    "entry_time": now_str(),
+                                    "tp1_hit": False,
+                                    "tp2_hit": False,
+                                    "tp3_hit": False,
+                                    "tp4_hit": False
+                                }
+                                save_json(POS_FILE, position)
+                                log_event(
+                                    f"[bold green]🚀 PICASSO ENTRY[/bold green] "
+                                    f"${entry_price:,.2f} · {position_size:.4f} BTC "
+                                    f"(${entry_price * position_size:,.2f}) · stop ${stop_loss:,.2f}"
+                                )
 
-            # Check if we have an open position
-            if position:
-                console.print(f"[cyan]📊 Position active | Current: ${current_price:.2f}[/cyan]")
+                        state["position"] = position
 
-                # Check take-profit levels
-                entry = position["entry"]
-                tp1 = position["tp1"]
-                tp2 = position["tp2"]
-                tp3 = position["tp3"]
-                tp4 = position["tp4"]
-                stop = position["stop_loss"]
+                except Exception as e:
+                    log_event(f"[red]❌ Scan error: {e}[/red]")
 
-                # TP logic
-                if current_price >= tp1 and not position.get("tp1_hit"):
-                    profit = (current_price - entry) * position["size"]
-                    console.print(f"[bold green]🎯 TP1 HIT! Profit: ${profit:.2f}[/bold green]")
-                    position["tp1_hit"] = True
-                    track_trade_profit(profit)
-                    save_json(POS_FILE, position)
+                # ---- COUNTDOWN: repaint every second, live ticker price every 10s ----
+                for remaining in range(SCAN_INTERVAL, 0, -1):
+                    state["countdown"] = remaining
+                    if remaining % 10 == 0:
+                        try:
+                            last = safe_float((ex.fetch_ticker(SYMBOL) or {}).get("last"))
+                            if last > 0:
+                                state["price"] = last
+                                state["price_live"] = True
+                        except Exception:
+                            pass
+                    live.update(build_screen(state))
+                    time.sleep(1)
 
-                if current_price >= tp2 and not position.get("tp2_hit"):
-                    profit = (current_price - entry) * position["size"]
-                    console.print(f"[bold green]🎯🎯 TP2 HIT! Profit: ${profit:.2f}[/bold green]")
-                    position["tp2_hit"] = True
-                    track_trade_profit(profit)
-                    save_json(POS_FILE, position)
-
-                if current_price >= tp3 and not position.get("tp3_hit"):
-                    profit = (current_price - entry) * position["size"]
-                    console.print(f"[bold green]🎯🎯🎯 TP3 HIT! Profit: ${profit:.2f}[/bold green]")
-                    position["tp3_hit"] = True
-                    track_trade_profit(profit)
-                    save_json(POS_FILE, position)
-
-                if current_price >= tp4 and not position.get("tp4_hit"):
-                    profit = (current_price - entry) * position["size"]
-                    console.print(f"[bold green]🎯🎯🎯🎯 TP4 HIT! MAXIMUM EXTENSION! Profit: ${profit:.2f}[/bold green]")
-                    position["tp4_hit"] = True
-                    track_trade_profit(profit)
-                    save_json(POS_FILE, position)
-                    # Close position after TP4
-                    console.print(f"[bold magenta]🎨 PICASSO COMPLETE! All TPs hit, closing position.[/bold magenta]")
-                    position = None
-                    save_json(POS_FILE, None)
-
-                # Stop loss check
-                if current_price <= stop and position:
-                    loss = (entry - current_price) * position["size"]
-                    console.print(f"[bold red]🛑 STOP LOSS HIT! Loss: -${loss:.2f}[/bold red]")
-                    position = None
-                    save_json(POS_FILE, None)
-
-            else:
-                # No position - check for entry
-                if check_pullback_entry(df, fib_levels):
-                    # Entry at 0.382 level (NOT current price!)
-                    entry_price = fib_levels["entry"]
-                    stop_loss = fib_levels["stop_loss"]
-                    position_size = calculate_position_size(entry_price, stop_loss, RISK_AMOUNT_USD)
-
-                    position = {
-                        "entry": entry_price,
-                        "size": position_size,
-                        "stop_loss": stop_loss,
-                        "tp1": fib_levels["tp1"],
-                        "tp2": fib_levels["tp2"],
-                        "tp3": fib_levels["tp3"],
-                        "tp4": fib_levels["tp4"],
-                        "entry_time": now_str(),
-                        "tp1_hit": False,
-                        "tp2_hit": False,
-                        "tp3_hit": False,
-                        "tp4_hit": False
-                    }
-
-                    save_json(POS_FILE, position)
-
-                    console.print(Panel.fit(
-                        f"[bold green]🚀 PICASSO ENTRY![/bold green]\n"
-                        f"[cyan]Entry: ${entry_price:.2f}[/cyan]\n"
-                        f"[cyan]Size: {position_size:.4f} BTC (${entry_price * position_size:.2f})[/cyan]\n"
-                        f"[red]Stop Loss: ${stop_loss:.2f}[/red]\n"
-                        f"[green]TP1: ${fib_levels['tp1']:.2f} (100% winner)[/green]\n"
-                        f"[green]TP2: ${fib_levels['tp2']:.2f} (70% in 1hr)[/green]\n"
-                        f"[green]TP3: ${fib_levels['tp3']:.2f} (golden ratio)[/green]\n"
-                        f"[green]TP4: ${fib_levels['tp4']:.2f} (maximum)[/green]",
-                        border_style="green"
-                    ))
-                else:
-                    console.print(f"[dim]{now_str()} | Price: ${current_price:.2f} | Waiting for double bottom at gold zone (0.5), then entry at 0.382...[/dim]")
-
-            time.sleep(SCAN_INTERVAL)
-
-        except KeyboardInterrupt:
-            console.print("\n[yellow]🛑 PICASSO Bot stopped by user[/yellow]")
-            break
-        except Exception as e:
-            console.print(f"[red]❌ Error: {e}[/red]")
-            time.sleep(SCAN_INTERVAL)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]🛑 PICASSO Bot stopped by user[/yellow]")
 
 if __name__ == "__main__":
     console.print("[bold cyan]" + "="*60 + "[/bold cyan]")
