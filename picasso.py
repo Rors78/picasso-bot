@@ -419,15 +419,17 @@ def build_fib_table(fib, price):
     table.add_column("", no_wrap=True, width=1)
     table.add_column("Role", style="dim", no_wrap=True, overflow="ellipsis")
 
+    # Colors mirror the operator's TradingView fib tool:
+    # 0.382 white · 0.5/0.618 yellow · extensions green · -1.618 bright green
     rows = [
-        (f"TP4  ({FIB_EXTENSION_TP4})", fib["tp4"], "max ext", "green"),
+        (f"TP4  ({FIB_EXTENSION_TP4})", fib["tp4"], "max ext", "bold bright_green"),
         (f"TP3  ({FIB_EXTENSION_TP3})", fib["tp3"], "golden ratio", "green"),
         (f"TP2  ({FIB_EXTENSION_TP2})", fib["tp2"], "70% in 1hr", "green"),
         (f"TP1  ({FIB_EXTENSION_TP1})", fib["tp1"], "swing high", "green"),
-        ("Swing High", fib["swing_high"], "0.0 retrace", "white"),
-        (f"ENTRY ({FIB_RETRACEMENT_ENTRY})", fib["entry"], "🚀 entry", "bold cyan"),
+        ("Swing High", fib["swing_high"], "0.0 retrace", "green"),
+        (f"ENTRY ({FIB_RETRACEMENT_ENTRY})", fib["entry"], "🚀 entry", "bold white"),
         (f"GOLD ZONE ({FIB_RETRACEMENT_GOLDEN_ZONE})", fib["golden_zone"], "🎯 dbl bottom", "bold yellow"),
-        (f"STOP ({FIB_RETRACEMENT_STOP_LOSS})", fib["stop_loss"], "🛑 stop", "bold red"),
+        (f"STOP ({FIB_RETRACEMENT_STOP_LOSS})", fib["stop_loss"], "🛑 stop", "bold yellow"),
         ("Swing Low", fib["swing_low"], "1.0 retrace", "white"),
     ]
     nearest = None
@@ -456,7 +458,8 @@ def build_chart(state):
     # Which chart row each fib level lands on (only levels inside the window)
     level_rows = {}
     if fib:
-        for key, color in (("entry", "cyan"), ("golden_zone", "yellow"), ("stop_loss", "red")):
+        # TV palette: entry white, gold zone + stop yellow
+        for key, color in (("entry", "white"), ("golden_zone", "yellow"), ("stop_loss", "yellow")):
             v = fib[key]
             if lo <= v <= hi:
                 level_rows.setdefault(round(1 + (v - lo) / span * (H - 1)), color)
