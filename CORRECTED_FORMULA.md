@@ -4,6 +4,12 @@
 **Status**: ✅ CORRECTED AND VERIFIED
 **Source**: User's voice explanation of the REAL PICASSO formula
 
+> **2026-08-27 — verified against the operator's actual TradingView fib tool
+> settings** (screenshot dated 2025-08-07): enabled levels are exactly
+> 0, 0.382, 0.5, 0.618, 1, -0.382, -0.618, -1.618 — matching the configured
+> entry/gold/stop retracements and the 1.382/1.618/2.618 extension translation
+> level for level. No unchecked TradingView level appears in the bot.
+
 ---
 
 ## 🚨 CRITICAL CORRECTION MADE
