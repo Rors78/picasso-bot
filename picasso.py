@@ -376,10 +376,11 @@ def build_header():
 def build_fib_table(fib, price):
     table = Table(box=box.ROUNDED, expand=True, border_style="cyan",
                   title="📐 Fibonacci Ladder", title_style="bold cyan")
-    table.add_column("Level", style="yellow", no_wrap=True)
-    table.add_column("Price", justify="right", style="bold green", no_wrap=True)
-    table.add_column("Role", style="dim", no_wrap=True)  # no_wrap: wrapped rows pushed the lower half of the ladder off-screen
-    table.add_column("", no_wrap=True)
+    # Column priority: Level and Price must never truncate; Role absorbs any squeeze.
+    table.add_column("Level", style="yellow", no_wrap=True, min_width=17)
+    table.add_column("Price", justify="right", style="bold green", no_wrap=True, min_width=10)
+    table.add_column("", no_wrap=True, width=1)
+    table.add_column("Role", style="dim", no_wrap=True, overflow="ellipsis")
 
     rows = [
         (f"TP4  ({FIB_EXTENSION_TP4})", fib["tp4"], "max ext", "green"),
@@ -396,9 +397,46 @@ def build_fib_table(fib, price):
     if price:
         nearest = min(range(len(rows)), key=lambda i: abs(rows[i][1] - price))
     for i, (name, val, role, style) in enumerate(rows):
-        marker = "[bold magenta]◀── price[/]" if i == nearest else ""
-        table.add_row(f"[{style}]{name}[/]", f"${val:,.2f}", role, marker)
+        marker = "[bold magenta]◀[/]" if i == nearest else ""
+        table.add_row(f"[{style}]{name}[/]", f"${val:,.2f}", marker, role)
     return table
+
+def build_chart(state):
+    """Bar chart of recent 1h closes rendered in block characters."""
+    closes = state.get("closes") or []
+    fib = state.get("fib")
+    if not closes:
+        return Panel(Align.center("[dim]waiting for candles...[/]"), border_style="cyan", box=box.ROUNDED)
+
+    W, H = 54, 9
+    data = closes[-W:]
+    lo, hi = min(data), max(data)
+    span = (hi - lo) or 1.0
+    heights = [1 + (c - lo) / span * (H - 1) for c in data]
+
+    lines = []
+    for row in range(H, 0, -1):
+        chars = []
+        for j, h in enumerate(heights):
+            if h >= row:
+                ch = "█"
+            elif h >= row - 0.5:
+                ch = "▄"
+            else:
+                ch = " "
+            if ch != " " and j == len(heights) - 1:
+                ch = f"[bold magenta]{ch}[/]"
+            elif ch != " ":
+                ch = f"[cyan]{ch}[/]"
+            chars.append(ch)
+        lines.append("".join(chars))
+
+    title = f"📈 {SYMBOL} · last {len(data)}h"
+    sub = f"[dim]hi[/] [green]${hi:,.0f}[/] · [dim]lo[/] [red]${lo:,.0f}[/] · [dim]now[/] [bold white]${data[-1]:,.0f}[/]"
+    body = Text.from_markup("\n".join(lines))
+    body.no_wrap = True
+    body.overflow = "crop"
+    return Panel(body, title=title, subtitle=sub, border_style="cyan", box=box.ROUNDED)
 
 def build_status(state):
     fib = state.get("fib")
@@ -469,8 +507,12 @@ def build_screen(state):
     fib = state.get("fib")
     if fib:
         layout["body"].split_row(
-            Layout(build_fib_table(fib, state.get("price")), name="fib"),
+            Layout(name="left"),
             Layout(build_status(state), name="status"),
+        )
+        layout["left"].split_column(
+            Layout(build_fib_table(fib, state.get("price")), name="fib", size=14),
+            Layout(build_chart(state), name="chart"),
         )
     else:
         layout["body"].update(Panel(Align.center("[cyan]⏳ Fetching first candles from Binance US...[/]"),
@@ -583,6 +625,7 @@ def main():
                         state["price"] = current_price
                         state["price_live"] = False
                         state["metrics"] = market_metrics(df, fib_levels)
+                        state["closes"] = [float(c) for c in df["close"].tail(120)]
 
                         if position:
                             entry = position["entry"]
