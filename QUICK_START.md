@@ -7,21 +7,28 @@
 
 ---
 
-## 🎯 YOUR EXACT FIBONACCI LEVELS (NOW CONFIGURED)
+## 🎯 THE CONFIGURED LEVELS (corrected formula — see CORRECTED_FORMULA.md)
 
-### Entry Zone:
-- **Golden Zone**: 0.618 retracement (YELLOW line in your TradingView)
-- **Entry Trigger**: DOUBLE BOTTOM bounce (2 touches of golden zone)
-- **Max Dip**: 2.0% into golden zone
+### Entry:
+- **Gold Zone**: 0.5 retracement — DOUBLE BOTTOM confirmation happens here
+- **Entry Trigger**: 0.382 retracement, on the bounce up after the double bottom
+- **Max Dip**: 2.0% below the gold zone invalidates the setup (breakdown, not pullback)
 
 ### Stop Loss:
-- **1.0** (at swing low) - Clean stop below golden zone
+- **0.618 retracement** — below entry and gold zone (moves to breakeven after TP1)
 
-### Take-Profit Targets:
-- **TP1**: 1.0 extension (swing high) - **100% WINNER** 🎯
-- **TP2**: 1.382 extension (your -0.382 in TV) - **70% WITHIN 1 HOUR** ⏱️
-- **TP3**: 1.618 extension (your -0.618 in TV) - Golden ratio 📐
-- **TP4**: 2.618 extension (your -1.618 in TV) - Maximum extension 🚀
+### Take-Profit Targets (scaled exits — 25% of the position sold at each):
+- **TP1**: 1.0 extension (swing high)
+- **TP2**: 1.382 extension (your -0.382 in TV)
+- **TP3**: 1.618 extension (your -0.618 in TV)
+- **TP4**: 2.618 extension (your -1.618 in TV) — closes the trade
+
+### Measure it, don't trust it:
+```
+python picasso.py --backtest 90    # replay the strategy, report WR / P/L / drawdown
+python picasso.py --tune 90        # grid-search volume + tolerance filters
+```
+Leverage (paper simulation only, live is always spot 1x): `set PICASSO_LEVERAGE=20`
 
 ---
 

@@ -94,10 +94,20 @@ FIB_EXTENSION_TP4 = float(os.environ.get("PICASSO_TP4", "2.618"))    # ✅ 2.618
 # Entry Settings
 MAX_DIP_PERCENT = float(os.environ.get("PICASSO_MAX_DIP", "2.0"))    # Max 2% dip into golden zone
 VOLUME_CONFIRMATION = float(os.environ.get("PICASSO_VOL_MULT", "1.5"))  # Volume spike on bounce
+TOUCH_TOL_PCT = float(os.environ.get("PICASSO_TOUCH_TOL", "0.02"))   # Level-touch tolerance, fraction of swing range
 
 # Risk Management
 RISK_AMOUNT_USD = float(os.environ.get("PICASSO_RISK_USD", "1000"))  # $1000 per trade (user's proven amount)
 PAPER_MODE = (os.environ.get("PICASSO_PAPER", "1") == "1")  # Default paper mode
+
+# Leverage - PAPER/BACKTEST SIMULATION ONLY.
+# Binance US is spot-only: no venue this bot may use can execute leverage,
+# so live mode is forced to 1x regardless of this setting.
+# Multiplies position size; a liquidation price (entry * (1 - 1/lev)) is
+# simulated and wipes the remaining margin if touched - checked before the stop.
+LEVERAGE = max(1.0, float(os.environ.get("PICASSO_LEVERAGE", "1")))
+if not PAPER_MODE and LEVERAGE > 1:
+    LEVERAGE = 1.0  # live = spot = 1x, always
 
 # Trading Pair
 SYMBOL = os.environ.get("PICASSO_SYMBOL", "BTC/USDT")  # BTC only
@@ -218,11 +228,11 @@ def check_pullback_entry(df, fib_levels):
     golden_zone = fib_levels["golden_zone"]  # 0.5
     stop_loss = fib_levels["stop_loss"]      # 0.618
 
-    # Tolerance for level detection: 2% of the SWING RANGE, not of price.
+    # Tolerance for level detection: a fraction of the SWING RANGE, not of price.
     # (2% of price at BTC levels is wider than the gap between fib levels,
     # which made every candle low count as a gold-zone "touch".)
-    entry_tolerance = fib_levels["range"] * 0.02
-    golden_tolerance = fib_levels["range"] * 0.02
+    entry_tolerance = fib_levels["range"] * TOUCH_TOL_PCT
+    golden_tolerance = fib_levels["range"] * TOUCH_TOL_PCT
 
     # STEP 1: Check for DOUBLE BOTTOM at gold zone (0.5) in recent history
     recent_lows = df["low"].tail(15).astype(float)
@@ -258,6 +268,11 @@ def check_pullback_entry(df, fib_levels):
                 recent_was_at_golden = True
                 break
 
+    # STEP 7: Max-dip guard (documented since day one, previously never enforced):
+    # a plunge more than MAX_DIP_PERCENT below the gold zone is a breakdown, not a pullback
+    dip_floor = golden_zone * (1 - MAX_DIP_PERCENT / 100.0)
+    dip_ok = float(df["low"].tail(10).astype(float).min()) >= dip_floor
+
     # ALL CONDITIONS for entry:
     # 1. Double bottom at gold zone confirmed ✓
     # 2. Price recently was at gold zone ✓
@@ -265,8 +280,9 @@ def check_pullback_entry(df, fib_levels):
     # 4. Price bouncing up ✓
     # 5. Volume spike ✓
     # 6. Above stop loss ✓
+    # 7. No breakdown below the gold zone (max dip) ✓
     if (double_bottom_confirmed and recent_was_at_golden and at_entry_level and
-        below_swing_high and bouncing_up and volume_ok and above_stop):
+        below_swing_high and bouncing_up and volume_ok and above_stop and dip_ok):
         log_event("[bold yellow]🎯 DOUBLE BOTTOM at GOLD ZONE confirmed![/bold yellow]")
         log_event(f"[bold green]🚀 ENTRY signal at {FIB_RETRACEMENT_ENTRY} level (${close_price:,.2f})![/bold green]")
         return True
@@ -376,7 +392,7 @@ def market_metrics(df, fib_levels):
         avg_vol = float(vol_series.mean()) or 1.0
         cur_vol = float(df.iloc[-1]["volume"])
         golden = fib_levels["golden_zone"]
-        tol = fib_levels["range"] * 0.02  # must mirror check_pullback_entry's tolerance
+        tol = fib_levels["range"] * TOUCH_TOL_PCT  # must mirror check_pullback_entry's tolerance
         lows = df["low"].tail(15).astype(float)
         touches = sum(1 for lo in lows if abs(lo - golden) <= tol)
         bouncing = float(df.iloc[-1]["close"]) > float(df.iloc[-2]["close"])
@@ -386,9 +402,10 @@ def market_metrics(df, fib_levels):
 
 def build_header():
     mode = "[bold black on green] PAPER [/]" if PAPER_MODE else "[bold white on red] LIVE [/]"
+    lev = f"   [bold white on red] {LEVERAGE:.0f}x SIM [/]" if LEVERAGE > 1 else ""
     return Panel(
         Align.center(
-            f"[bold cyan]🎨 {APP}[/]   [white]{SYMBOL} · {TIMEFRAME} · ${RISK_AMOUNT_USD:.0f} risk/trade[/]   {mode}"
+            f"[bold cyan]🎨 {APP}[/]   [white]{SYMBOL} · {TIMEFRAME} · ${RISK_AMOUNT_USD:.0f} risk/trade[/]   {mode}{lev}"
         ),
         border_style="cyan", box=box.HEAVY,
     )
@@ -501,12 +518,19 @@ def build_status(state):
     grid.add_row("Bouncing up", "[bold green]YES[/]" if metrics.get("bouncing") else "[dim]no[/]")
 
     if position:
-        upnl = (price - position["entry"]) * position["size"] if price else 0.0
+        rem = position.get("remaining", position["size"])
+        banked = position.get("realized", 0.0)
+        upnl = (price - position["entry"]) * rem if price else 0.0
         u_style = "bold green" if upnl >= 0 else "bold red"
         grid.add_row("", "")
         grid.add_row("[bold magenta]POSITION[/]", "")
         grid.add_row("Entry", f"${position['entry']:,.2f}")
-        grid.add_row("Size", f"{position['size']:.4f} BTC")
+        grid.add_row("Size left", f"{rem:.4f} / {position['size']:.4f} BTC")
+        at_be = position["stop_loss"] >= position["entry"]
+        grid.add_row("Stop", f"${position['stop_loss']:,.2f}" + (" [cyan](breakeven)[/]" if at_be else ""))
+        if position.get("leverage", 1.0) > 1:
+            grid.add_row("Leverage", f"[bold red]{position['leverage']:.0f}x · liq ${position.get('liq', 0):,.2f}[/]")
+        grid.add_row("Banked", f"[green]{banked:+,.2f} USD[/]" if banked else "[dim]0.00 USD[/]")
         grid.add_row("Unrealized P/L", f"[{u_style}]{upnl:+,.2f} USD[/]")
         tps = "  ".join(
             f"[green]TP{i}✓[/]" if position.get(f"tp{i}_hit") else f"[dim]TP{i}·[/]"
@@ -668,34 +692,31 @@ def fetch_history(ex, days):
     df = pd.DataFrame(sorted(rows.values()), columns=["timestamp", "open", "high", "low", "close", "volume"])
     return df
 
-def run_backtest(days=60):
-    """Replay the exact live entry/exit logic over historical candles.
+def simulate(df):
+    """Run the strategy over a candle DataFrame using current module params.
 
-    Caveats vs live: the live bot samples intrabar prices every 5 minutes;
-    here only completed 1h bars exist, so TPs use the bar HIGH and stops use
-    the bar LOW, with the stop checked FIRST when both hit in the same bar
-    (conservative). Positions still open at the end close at the last price.
+    Scaled exits (25% per TP), stop to breakeven after TP1, leverage + liq.
+    Only completed 1h bars exist here: TPs fill at the bar HIGH, stops at the
+    bar LOW, liq checked first, then stop, then TPs (conservative ordering).
+    Returns (trades, max_drawdown).
     """
-    console.print(f"\n[bold cyan]🎨 PICASSO BACKTEST — {SYMBOL} {TIMEFRAME}, last {days} days[/bold cyan]")
-    ex = ccxt.binanceus({"enableRateLimit": True, "timeout": 20000})
-    df = fetch_history(ex, days)
-    console.print(f"[dim]{len(df)} candles · "
-                  f"{datetime.fromtimestamp(df.iloc[0]['timestamp']/1000, tz=timezone.utc):%Y-%m-%d} → "
-                  f"{datetime.fromtimestamp(df.iloc[-1]['timestamp']/1000, tz=timezone.utc):%Y-%m-%d}[/dim]\n")
-
     position, trades = None, []
     equity = peak = max_dd = 0.0
 
-    def close_out(exit_label, exit_price, i):
+    def close_out(label, exit_price, i):
         nonlocal position, equity, peak, max_dd
-        realized = (exit_price - position["entry"]) * position["size"]
-        tps_hit = sum(1 for k in (1, 2, 3, 4) if position.get(f"tp{k}_hit"))
+        if label == "LIQ":
+            tail = -position["entry"] * position["remaining"] / position["leverage"]
+        else:
+            tail = (exit_price - position["entry"]) * position["remaining"]
+        total = position["realized"] + tail
         trades.append({
             "when": datetime.fromtimestamp(df.iloc[position["entry_i"]]["timestamp"] / 1000, tz=timezone.utc),
-            "entry": position["entry"], "exit": exit_label, "exit_price": exit_price,
-            "tps": tps_hit, "pnl": realized, "bars": i - position["entry_i"],
+            "entry": position["entry"], "exit": label, "exit_price": exit_price,
+            "tps": sum(1 for k in (1, 2, 3, 4) if position[f"tp{k}_hit"]),
+            "pnl": total, "bars": i - position["entry_i"],
         })
-        equity += realized
+        equity += total
         peak = max(peak, equity)
         max_dd = max(max_dd, peak - equity)
         position = None
@@ -706,13 +727,24 @@ def run_backtest(days=60):
 
         if position:
             hi, lo = float(bar["high"]), float(bar["low"])
+            if position["leverage"] > 1 and lo <= position["liq"]:
+                close_out("LIQ", position["liq"], i)
+                continue
             if lo <= position["stop_loss"]:
-                close_out("STOP", position["stop_loss"], i)
+                close_out("BE-STOP" if position["stop_loss"] >= position["entry"] else "STOP",
+                          position["stop_loss"], i)
                 continue
             for k in (1, 2, 3, 4):
-                if hi >= position[f"tp{k}"]:
+                tp = position[f"tp{k}"]
+                if hi >= tp and not position[f"tp{k}_hit"]:
                     position[f"tp{k}_hit"] = True
-            if position.get("tp4_hit"):
+                    s = min(position["size"] * 0.25 if k < 4 else position["remaining"],
+                            position["remaining"])
+                    position["remaining"] -= s
+                    position["realized"] += (tp - position["entry"]) * s
+                    if k == 1:
+                        position["stop_loss"] = max(position["stop_loss"], position["entry"])
+            if position and (position["tp4_hit"] or position["remaining"] <= 1e-12):
                 close_out("TP4", position["tp4"], i)
         else:
             swing_low, swing_high = find_swing_high_low(window)
@@ -721,9 +753,11 @@ def run_backtest(days=60):
             fib = calculate_fibonacci_levels(swing_low, swing_high)
             if check_pullback_entry(window, fib):
                 entry, stop = fib["entry"], fib["stop_loss"]
+                size = calculate_position_size(entry, stop, RISK_AMOUNT_USD) * LEVERAGE
                 position = {
-                    "entry": entry, "stop_loss": stop,
-                    "size": calculate_position_size(entry, stop, RISK_AMOUNT_USD),
+                    "entry": entry, "stop_loss": stop, "size": size,
+                    "remaining": size, "realized": 0.0, "leverage": LEVERAGE,
+                    "liq": entry * (1 - 1 / LEVERAGE) if LEVERAGE > 1 else 0.0,
                     "tp1": fib["tp1"], "tp2": fib["tp2"], "tp3": fib["tp3"], "tp4": fib["tp4"],
                     "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "tp4_hit": False,
                     "entry_i": i,
@@ -731,6 +765,18 @@ def run_backtest(days=60):
 
     if position:
         close_out("EOD", float(df.iloc[-1]["close"]), len(df) - 1)
+    return trades, max_dd
+
+def run_backtest(days=60):
+    """Replay the exact live entry/exit logic over historical candles."""
+    lev_note = f" · {LEVERAGE:.0f}x SIM" if LEVERAGE > 1 else ""
+    console.print(f"\n[bold cyan]🎨 PICASSO BACKTEST — {SYMBOL} {TIMEFRAME}, last {days} days{lev_note}[/bold cyan]")
+    ex = ccxt.binanceus({"enableRateLimit": True, "timeout": 20000})
+    df = fetch_history(ex, days)
+    console.print(f"[dim]{len(df)} candles · "
+                  f"{datetime.fromtimestamp(df.iloc[0]['timestamp']/1000, tz=timezone.utc):%Y-%m-%d} → "
+                  f"{datetime.fromtimestamp(df.iloc[-1]['timestamp']/1000, tz=timezone.utc):%Y-%m-%d}[/dim]\n")
+    trades, max_dd = simulate(df)
 
     # ---- Report ----
     if not trades:
@@ -760,10 +806,64 @@ def run_backtest(days=60):
         f"[bold]Avg/trade:[/] {gross/len(trades):+,.2f}   [bold]Max drawdown:[/] ${max_dd:,.2f}\n"
         f"[bold]TP reach:[/] TP1 {tp_rate(1):.0f}% · TP2 {tp_rate(2):.0f}% · "
         f"TP3 {tp_rate(3):.0f}% · TP4 {tp_rate(4):.0f}%\n"
-        f"[dim]Same entry logic as live; exits via bar high/low (stop checked first). "
-        f"Risk ${RISK_AMOUNT_USD:.0f}/trade, gross P/L, no fees.[/dim]",
+        f"[dim]Scaled exits 25%/TP, breakeven stop after TP1; exits via bar high/low "
+        f"(liq, then stop, then TPs). Risk ${RISK_AMOUNT_USD:.0f}/trade at {LEVERAGE:.0f}x, "
+        f"gross P/L, no fees.[/dim]",
         title="📜 Backtest Summary", border_style="cyan",
     ))
+
+# ========== TUNER ==========
+
+def run_tune(days=90):
+    """Grid-search entry filters over one fetched history. 1h timeframe is
+    fixed by design - only volume confirmation and touch tolerance vary.
+    Tuned at 1x leverage so results measure signal quality, not sizing."""
+    global VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE
+    console.print(f"\n[bold cyan]🎨 PICASSO TUNE — {SYMBOL} {TIMEFRAME}, last {days} days[/bold cyan]")
+    ex = ccxt.binanceus({"enableRateLimit": True, "timeout": 20000})
+    df = fetch_history(ex, days)
+    console.print(f"[dim]{len(df)} candles fetched — sweeping volume x tolerance grid at 1x[/dim]\n")
+
+    saved = (VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE)
+    LEVERAGE = 1.0
+    results = []
+    try:
+        for vol in (1.0, 1.2, 1.5, 2.0):
+            for tol in (0.01, 0.02, 0.03, 0.05):
+                VOLUME_CONFIRMATION, TOUCH_TOL_PCT = vol, tol
+                trades, max_dd = simulate(df)
+                wins = sum(1 for t in trades if t["pnl"] > 0)
+                gross = sum(t["pnl"] for t in trades)
+                results.append({"vol": vol, "tol": tol, "n": len(trades), "wins": wins,
+                                "gross": gross, "dd": max_dd})
+    finally:
+        VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE = saved
+
+    results.sort(key=lambda r: r["gross"], reverse=True)
+    t = Table(box=box.ROUNDED, border_style="cyan", title="Parameter Sweep (sorted by gross P/L)")
+    for col, j in (("Vol mult", "right"), ("Touch tol", "right"), ("Trades", "right"),
+                   ("Win rate", "right"), ("Gross P/L", "right"), ("Max DD", "right")):
+        t.add_column(col, justify=j)
+    for r in results:
+        wr = f"{r['wins']/r['n']*100:.0f}%" if r["n"] else "—"
+        style = "green" if r["gross"] > 0 else "red"
+        mark = " ◀" if (r["vol"], r["tol"]) == (saved[0], saved[1]) else ""
+        t.add_row(f"{r['vol']:.1f}x{mark}", f"{r['tol']:.2f}", str(r["n"]), wr,
+                  f"[{style}]{r['gross']:+,.0f}[/]", f"${r['dd']:,.0f}")
+    console.print(t)
+
+    solid = [r for r in results if r["n"] >= 5]
+    if solid:
+        best = solid[0]
+        console.print(Panel.fit(
+            f"[bold]Best with ≥5 trades:[/] volume [bold cyan]{best['vol']:.1f}x[/] · "
+            f"tolerance [bold cyan]{best['tol']:.2f}[/]  →  {best['n']} trades, "
+            f"{best['wins']}/{best['n']} wins, gross [bold]{best['gross']:+,.0f}[/]\n"
+            f"[dim]Apply via: set PICASSO_VOL_MULT={best['vol']} & set PICASSO_TOUCH_TOL={best['tol']}\n"
+            f"One-window sweep — treat as a pointer, not a promise (overfit risk).[/dim]",
+            title="🔧 Recommendation", border_style="green"))
+    else:
+        console.print("[yellow]No parameter combo produced ≥5 trades — not enough signal to tune on.[/yellow]")
 
 # ========== MAIN LOOP ==========
 
@@ -778,10 +878,16 @@ def main():
         console.print(f"[red]❌ Exchange connection failed: {e}[/red]")
         return
 
-    # Load existing position if any
+    # Load existing position if any (migrate pre-scaled-exit positions)
     position = load_json(POS_FILE, None)
     if position:
+        position.setdefault("remaining", position["size"])
+        position.setdefault("realized", 0.0)
+        position.setdefault("leverage", 1.0)
+        position.setdefault("liq", 0.0)
         log_event(f"[magenta]Resumed open position (entry ${position['entry']:,.2f})[/magenta]")
+    if LEVERAGE > 1:
+        log_event(f"[bold red]⚠ {LEVERAGE:.0f}x leverage SIMULATION — paper only; live mode is always spot 1x[/bold red]")
     log_event(f"[cyan]PICASSO online — watching {SYMBOL} {TIMEFRAME} for double bottom at gold zone[/cyan]")
 
     state = {"fib": None, "price": None, "price_live": False, "metrics": None,
@@ -814,34 +920,59 @@ def main():
 
                         if position:
                             entry = position["entry"]
-                            stop = position["stop_loss"]
+                            lev = position.get("leverage", 1.0)
 
-                            for i in (1, 2, 3, 4):
-                                tp = position[f"tp{i}"]
-                                if current_price >= tp and not position.get(f"tp{i}_hit"):
-                                    profit = (current_price - entry) * position["size"]
-                                    log_event(f"[bold green]{'🎯' * i} TP{i} HIT! Profit: ${profit:,.2f}[/bold green]")
-                                    position[f"tp{i}_hit"] = True
-                                    track_trade_profit(profit)
-                                    record_trade(f"TP{i}", current_price, position["size"], profit)
-                                    save_json(POS_FILE, position)
-                                    if i == 4:
-                                        realized = (current_price - entry) * position["size"]
-                                        log_event("[bold magenta]🎨 PICASSO COMPLETE! All TPs hit, closing position.[/bold magenta]")
-                                        record_trade("CLOSE", current_price, position["size"], realized)
-                                        state["stats"] = update_stats(realized)
-                                        state["session_pl"] += realized
-                                        position = None
-                                        save_json(POS_FILE, None)
-                                        break
-
-                            # Stop loss check
-                            if position and current_price <= stop:
-                                realized = (current_price - entry) * position["size"]
-                                log_event(f"[bold red]🛑 STOP LOSS HIT! Loss: ${realized:,.2f}[/bold red]")
-                                record_trade("STOP", current_price, position["size"], realized)
-                                state["stats"] = update_stats(realized)
+                            # Liquidation first (leveraged sims): past liq the margin
+                            # is gone before any stop order could save you
+                            liq = position.get("liq", 0.0)
+                            if lev > 1 and liq > 0 and current_price <= liq:
+                                margin = entry * position["remaining"] / lev
+                                realized = -margin
+                                total = position.get("realized", 0.0) + realized
                                 state["session_pl"] += realized
+                                record_trade("LIQUIDATED", liq, position["remaining"], realized)
+                                state["stats"] = update_stats(total)
+                                log_event(f"[bold white on red]💀 LIQUIDATED at ${liq:,.2f} — margin wiped: ${realized:,.2f}[/bold white on red]")
+                                position = None
+                                save_json(POS_FILE, None)
+
+                            if position:
+                                # Scaled exits: 25% of the position at each TP
+                                for i in (1, 2, 3, 4):
+                                    tp = position[f"tp{i}"]
+                                    if current_price >= tp and not position.get(f"tp{i}_hit"):
+                                        position[f"tp{i}_hit"] = True
+                                        slice_size = position["size"] * 0.25 if i < 4 else position["remaining"]
+                                        slice_size = min(slice_size, position["remaining"])
+                                        realized = (tp - entry) * slice_size
+                                        position["remaining"] -= slice_size
+                                        position["realized"] = position.get("realized", 0.0) + realized
+                                        state["session_pl"] += realized
+                                        track_trade_profit(realized)
+                                        record_trade(f"TP{i}", tp, slice_size, realized)
+                                        log_event(f"[bold green]{'🎯' * i} TP{i} — sold {slice_size:.4f} BTC at ${tp:,.2f}, banked ${realized:,.2f}[/bold green]")
+                                        if i == 1 and position["stop_loss"] < entry:
+                                            position["stop_loss"] = entry
+                                            log_event("[cyan]🛡 Stop moved to breakeven[/cyan]")
+                                        save_json(POS_FILE, position)
+                                        if i == 4 or position["remaining"] <= 1e-12:
+                                            total = position["realized"]
+                                            log_event(f"[bold magenta]🎨 PICASSO COMPLETE — trade banked ${total:,.2f}[/bold magenta]")
+                                            state["stats"] = update_stats(total)
+                                            position = None
+                                            save_json(POS_FILE, None)
+                                            break
+
+                            # Stop check (may be at breakeven after TP1)
+                            if position and current_price <= position["stop_loss"]:
+                                stop_price = position["stop_loss"]
+                                realized = (stop_price - entry) * position["remaining"]
+                                total = position.get("realized", 0.0) + realized
+                                state["session_pl"] += realized
+                                record_trade("STOP", stop_price, position["remaining"], realized)
+                                state["stats"] = update_stats(total)
+                                label = "BREAKEVEN STOP" if stop_price >= entry else "STOP LOSS"
+                                log_event(f"[bold red]🛑 {label} at ${stop_price:,.2f} — trade total ${total:,.2f}[/bold red]")
                                 position = None
                                 save_json(POS_FILE, None)
 
@@ -851,11 +982,15 @@ def main():
                                 # Entry at the fib entry level (NOT current price!)
                                 entry_price = fib_levels["entry"]
                                 stop_loss = fib_levels["stop_loss"]
-                                position_size = calculate_position_size(entry_price, stop_loss, RISK_AMOUNT_USD)
+                                position_size = calculate_position_size(entry_price, stop_loss, RISK_AMOUNT_USD) * LEVERAGE
 
                                 position = {
                                     "entry": entry_price,
                                     "size": position_size,
+                                    "remaining": position_size,
+                                    "realized": 0.0,
+                                    "leverage": LEVERAGE,
+                                    "liq": entry_price * (1 - 1 / LEVERAGE) if LEVERAGE > 1 else 0.0,
                                     "stop_loss": stop_loss,
                                     "tp1": fib_levels["tp1"],
                                     "tp2": fib_levels["tp2"],
@@ -903,6 +1038,12 @@ if __name__ == "__main__":
         idx = sys.argv.index("--backtest")
         bt_days = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 and sys.argv[idx + 1].isdigit() else 60
         run_backtest(bt_days)
+        sys.exit(0)
+
+    if "--tune" in sys.argv:
+        idx = sys.argv.index("--tune")
+        tn_days = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 and sys.argv[idx + 1].isdigit() else 90
+        run_tune(tn_days)
         sys.exit(0)
 
     console.print("[bold cyan]" + "="*60 + "[/bold cyan]")
