@@ -164,7 +164,7 @@ function drawChart(d) {
 
 function render(s) {
   window._minRange = s.min_range_pct || 0.5;
-  $("meta").textContent = `KRAKEN · ${Object.keys(s.syms).length} pairs · ${s.timeframe} · $${s.risk} risk/trade`;
+  $("meta").textContent = `KRAKEN · ${Object.keys(s.syms).length} pairs · ${s.timeframe} · $${s.risk_usd} risk/trade`;
   $("mode").textContent = s.paper ? "PAPER" : "LIVE";
   $("mode").className = "badge " + (s.paper ? "b-paper" : "b-live");
   const mm = String(Math.floor(s.countdown / 60)).padStart(2, "0"), ss = String(s.countdown % 60).padStart(2, "0");

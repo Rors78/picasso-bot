@@ -1269,7 +1269,7 @@ def state_snapshot(state):
         }
     return {
         "ready": True, "app": APP, "paper": PAPER_MODE, "timeframe": TIMEFRAME,
-        "risk": RISK_AMOUNT_USD, "countdown": state.get("countdown", 0),
+        "risk_usd": RISK_AMOUNT_USD, "countdown": state.get("countdown", 0),
         "scan_interval": SCAN_INTERVAL, "scans": state.get("scans", 0),
         "started": state.get("started"), "session_pl": state.get("session_pl", 0.0),
         "session_entries": state.get("session_entries", 0),
