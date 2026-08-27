@@ -840,6 +840,17 @@ def run_backtest(days=60):
                   f"[{style}]{tr['pnl']:+,.2f}[/]")
     console.print(t)
 
+    # Equity curve sparkline (cumulative P/L after each trade)
+    cum, run = [], 0.0
+    for tr in trades:
+        run += tr["pnl"]
+        cum.append(run)
+    lo_c, hi_c = min(cum + [0.0]), max(cum + [0.0])
+    span_c = (hi_c - lo_c) or 1.0
+    blocks = "▁▂▃▄▅▆▇█"
+    spark = "".join(blocks[min(7, int((v - lo_c) / span_c * 7.999))] for v in cum)
+    console.print(f"[bold]Equity:[/] [cyan]{spark}[/]  [dim]${lo_c:,.0f} → ${hi_c:,.0f} span[/]\n")
+
     wins = [tr for tr in trades if tr["pnl"] > 0]
     gross = sum(tr["pnl"] for tr in trades)
     tp_rate = lambda k: sum(1 for tr in trades if tr["tps"] >= k) / len(trades) * 100
@@ -859,16 +870,10 @@ def run_backtest(days=60):
 
 # ========== TUNER ==========
 
-def run_tune(days=90):
-    """Grid-search entry filters over one fetched history. 1h timeframe is
-    fixed by design - only volume confirmation and touch tolerance vary.
-    Tuned at 1x leverage so results measure signal quality, not sizing."""
+def sweep_grid(df):
+    """Sweep the volume x tolerance grid over one DataFrame at 1x leverage.
+    Returns result rows; restores module params afterward."""
     global VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE
-    console.print(f"\n[bold cyan]🎨 PICASSO TUNE — {SYMBOL} {TIMEFRAME}, last {days} days[/bold cyan]")
-    ex = ccxt.binanceus({"enableRateLimit": True, "timeout": 20000})
-    df = fetch_history(ex, days)
-    console.print(f"[dim]{len(df)} candles fetched — sweeping volume x tolerance grid at 1x[/dim]\n")
-
     saved = (VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE)
     LEVERAGE = 1.0
     results = []
@@ -883,6 +888,18 @@ def run_tune(days=90):
                                 "gross": gross, "dd": max_dd})
     finally:
         VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE = saved
+    return results
+
+def run_tune(days=90):
+    """Grid-search entry filters over one fetched history. 1h timeframe is
+    fixed by design - only volume confirmation and touch tolerance vary.
+    Tuned at 1x leverage so results measure signal quality, not sizing."""
+    console.print(f"\n[bold cyan]🎨 PICASSO TUNE — {SYMBOL} {TIMEFRAME}, last {days} days[/bold cyan]")
+    ex = ccxt.binanceus({"enableRateLimit": True, "timeout": 20000})
+    df = fetch_history(ex, days)
+    console.print(f"[dim]{len(df)} candles fetched — sweeping volume x tolerance grid at 1x[/dim]\n")
+    results = sweep_grid(df)
+    saved = (VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE)
 
     results.sort(key=lambda r: r["gross"], reverse=True)
     t = Table(box=box.ROUNDED, border_style="cyan", title="Parameter Sweep (sorted by gross P/L)")
@@ -909,6 +926,77 @@ def run_tune(days=90):
             title="🔧 Recommendation", border_style="green"))
     else:
         console.print("[yellow]No parameter combo produced ≥5 trades — not enough signal to tune on.[/yellow]")
+
+# ========== WALK-FORWARD VALIDATION ==========
+
+def run_walkforward(days=270, tune_days=90, test_days=30):
+    """Anti-overfit check: tune on `tune_days`, then trade the NEXT `test_days`
+    out-of-sample with the chosen params. Roll forward and aggregate.
+    All at 1x leverage - this measures signal quality, not sizing."""
+    global VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE
+    console.print(f"\n[bold cyan]🎨 PICASSO WALK-FORWARD — {days}d history: "
+                  f"tune {tune_days}d → test {test_days}d, rolling[/bold cyan]")
+    ex = ccxt.binanceus({"enableRateLimit": True, "timeout": 20000})
+    df = fetch_history(ex, days)
+    console.print(f"[dim]{len(df)} candles fetched[/dim]\n")
+
+    TUNE_BARS, TEST_BARS, LEAD = tune_days * 24, test_days * 24, 200
+    saved = (VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE)
+    folds, oos_all = [], []
+    start = 0
+    while start + TUNE_BARS + TEST_BARS <= len(df):
+        tune_df = df.iloc[start: start + TUNE_BARS].reset_index(drop=True)
+        test_lead = max(0, start + TUNE_BARS - LEAD)
+        test_df = df.iloc[test_lead: start + TUNE_BARS + TEST_BARS].reset_index(drop=True)
+        test_start_ts = df.iloc[start + TUNE_BARS]["timestamp"]
+        test_start_dt = datetime.fromtimestamp(test_start_ts / 1000, tz=timezone.utc)
+
+        grid = [r for r in sweep_grid(tune_df) if r["n"] >= 5]
+        grid.sort(key=lambda r: r["gross"], reverse=True)
+        if grid:
+            vol, tol, is_gross = grid[0]["vol"], grid[0]["tol"], grid[0]["gross"]
+        else:
+            vol, tol, is_gross = saved[0], saved[1], None  # nothing tunable: keep current params
+
+        try:
+            VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE = vol, tol, 1.0
+            trades, _ = simulate(test_df)
+        finally:
+            VOLUME_CONFIRMATION, TOUCH_TOL_PCT, LEVERAGE = saved
+        oos = [t for t in trades if t["when"] >= test_start_dt]
+        oos_all.extend(oos)
+        folds.append({"start": test_start_dt, "vol": vol, "tol": tol, "is_gross": is_gross,
+                      "n": len(oos), "wins": sum(1 for t in oos if t["pnl"] > 0),
+                      "gross": sum(t["pnl"] for t in oos)})
+        log_msg = f"fold {len(folds)}: tuned ({vol:.1f}x, {tol:.2f}) → OOS {len(oos)} trades, {folds[-1]['gross']:+,.0f}"
+        console.print(f"[dim]{log_msg}[/dim]")
+        start += TEST_BARS
+
+    if not folds:
+        console.print("[yellow]Not enough history for a single fold.[/yellow]")
+        return
+
+    t = Table(box=box.ROUNDED, border_style="cyan", title="Walk-Forward Folds (out-of-sample)")
+    for col, j in (("Test month", "left"), ("Tuned params", "left"), ("IS gross", "right"),
+                   ("OOS trades", "right"), ("OOS WR", "right"), ("OOS gross", "right")):
+        t.add_column(col, justify=j)
+    for f in folds:
+        wr = f"{f['wins']/f['n']*100:.0f}%" if f["n"] else "—"
+        style = "green" if f["gross"] > 0 else ("red" if f["gross"] < 0 else "dim")
+        t.add_row(f"{f['start']:%Y-%m-%d}", f"{f['vol']:.1f}x / {f['tol']:.2f}",
+                  f"{f['is_gross']:+,.0f}" if f["is_gross"] is not None else "[dim]default[/]",
+                  str(f["n"]), wr, f"[{style}]{f['gross']:+,.0f}[/]")
+    console.print(t)
+
+    n = len(oos_all)
+    wins = sum(1 for x in oos_all if x["pnl"] > 0)
+    gross = sum(x["pnl"] for x in oos_all)
+    g_style = "bold green" if gross >= 0 else "bold red"
+    console.print(Panel.fit(
+        f"[bold]Out-of-sample total:[/] {n} trades · "
+        f"WR {wins/n*100:.1f}% ({wins}W/{n-wins}L) · gross [{g_style}]{gross:+,.2f} USD[/] at 1x\n"
+        f"[dim]This is the honest number: every trade here was taken on data the tuner never saw.[/dim]",
+        title="🧪 Walk-Forward Verdict", border_style="cyan"))
 
 # ========== MAIN LOOP ==========
 
@@ -1098,6 +1186,12 @@ if __name__ == "__main__":
         idx = sys.argv.index("--tune")
         tn_days = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 and sys.argv[idx + 1].isdigit() else 90
         run_tune(tn_days)
+        sys.exit(0)
+
+    if "--walkforward" in sys.argv:
+        idx = sys.argv.index("--walkforward")
+        wf_days = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 and sys.argv[idx + 1].isdigit() else 270
+        run_walkforward(wf_days)
         sys.exit(0)
 
     console.print("[bold cyan]" + "="*60 + "[/bold cyan]")
