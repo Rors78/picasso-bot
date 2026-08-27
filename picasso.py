@@ -917,6 +917,9 @@ def simulate(df):
             "entry": position["entry"], "exit": label, "exit_price": exit_price,
             "tps": sum(1 for k in (1, 2, 3, 4) if position[f"tp{k}_hit"]),
             "pnl": total, "bars": i - position["entry_i"],
+            "entry_ts": float(df.iloc[position["entry_i"]]["timestamp"]),
+            "exit_ts": float(df.iloc[i]["timestamp"]),
+            "margin": position["entry"] * position["size"] / position["leverage"],
         })
         equity += total
         peak = max(peak, equity)
@@ -1070,13 +1073,28 @@ def run_backtest_all(days=60):
     console.print(t)
 
     if all_trades:
-        all_trades.sort(key=lambda x: x["when"])
+        # Equity ordered by EXIT time - P/L books when trades close, not open
+        all_trades.sort(key=lambda x: x.get("exit_ts", 0))
         cum, run, peak, dd = [], 0.0, 0.0, 0.0
         for tr in all_trades:
             run += tr["pnl"]
             cum.append(run)
             peak = max(peak, run)
             dd = max(dd, peak - run)
+
+        # Overlap analysis: how simultaneous was the fleet, really?
+        events = []
+        for tr in all_trades:
+            events.append((tr["entry_ts"], 1, tr.get("margin", 0.0)))
+            events.append((tr["exit_ts"], -1, -tr.get("margin", 0.0)))
+        events.sort()  # exits (-1) before entries (+1) on ties
+        cur_n = peak_n = 0
+        cur_m = peak_m = 0.0
+        for _, delta, m in events:
+            cur_n += delta
+            cur_m += m
+            peak_n = max(peak_n, cur_n)
+            peak_m = max(peak_m, cur_m)
         lo_c, hi_c = min(cum + [0.0]), max(cum + [0.0])
         span = (hi_c - lo_c) or 1.0
         blocks = "▁▂▃▄▅▆▇█"
@@ -1089,8 +1107,10 @@ def run_backtest_all(days=60):
         console.print(Panel.fit(
             f"[bold]Fleet total:[/] {n} trades · WR {wins/n*100:.1f}% ({wins}W/{n-wins}L) · "
             f"gross [{g_style}]{gross:+,.2f} USD[/] · combined max DD ${dd:,.2f}\n"
-            f"[dim]Each pair simulated independently at its own leverage; no shared capital "
-            f"constraint. Scaled exits, gross P/L, no fees.[/dim]",
+            f"[bold]Overlap:[/] peak {peak_n} positions open at once · "
+            f"peak margin posted ${peak_m:,.0f}\n"
+            f"[dim]Each pair simulated independently at its own leverage; overlap shows how "
+            f"much capital that would actually take. Scaled exits, gross P/L, no fees.[/dim]",
             title="🚁 Fleet Verdict", border_style="cyan"))
 
 # ========== TUNER ==========
@@ -1270,6 +1290,15 @@ class _WebHandler(BaseHTTPRequestHandler):
         try:
             if self.path.startswith("/api/state"):
                 body = json.dumps(state_snapshot(_WEB_STATE["state"])).encode()
+                ctype = "application/json"
+            elif self.path.startswith("/api/trades"):
+                rows = []
+                try:
+                    with open(TRADES_CSV, newline="") as f:
+                        rows = list(csv.DictReader(f))[-100:]
+                except FileNotFoundError:
+                    pass
+                body = json.dumps(rows).encode()
                 ctype = "application/json"
             else:
                 body = (BASE / "dashboard.html").read_bytes()

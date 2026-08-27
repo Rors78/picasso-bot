@@ -69,6 +69,10 @@
       <h2 id="charttitle">📈 CHART</h2>
       <canvas id="chart" width="900" height="230"></canvas>
     </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>📓 JOURNAL <span class="dim" style="float:right">trades.csv · newest first</span></h2>
+      <div style="max-height:220px; overflow-y:auto"><table id="journal"></table></div>
+    </div>
   </div>
   <div>
     <div class="cols">
@@ -272,8 +276,29 @@ async function tick() {
     $("conn").style.display = "block";
   }
 }
+
+async function tickJournal() {
+  try {
+    const r = await fetch("/api/trades", {cache: "no-store"});
+    const rows = await r.json();
+    const cls = ev => ev === "ENTRY" ? "cyan" : ev.startsWith("TP") ? "green"
+      : ev === "STOP" ? "red" : ev === "LIQUIDATED" ? "magenta" : "gold";
+    $("journal").innerHTML =
+      `<tr><th>Time</th><th>Pair</th><th>Event</th><th>Price</th><th>Size</th><th>P/L</th></tr>` +
+      rows.slice().reverse().map(t => {
+        const pnl = parseFloat(t.pnl || 0);
+        return `<tr><td class="dim">${t.time}</td><td>${t.symbol || ""}</td>
+          <td class="${cls(t.event)}">${t.event}</td><td>${fmt(parseFloat(t.price))}</td>
+          <td>${parseFloat(t.size).toFixed(4)}</td>
+          <td class="${pnl > 0 ? "green" : pnl < 0 ? "red" : "dim"}">${pnl ? (pnl > 0 ? "+" : "") + pnl.toFixed(2) : "—"}</td></tr>`;
+      }).join("") || '<tr><td class="dim">no trades recorded yet</td></tr>';
+  } catch (e) { /* banner handled by tick() */ }
+}
+
 tick();
+tickJournal();
 setInterval(tick, 2000);
+setInterval(tickJournal, 10000);
 </script>
 </body>
 </html>
