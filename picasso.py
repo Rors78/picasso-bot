@@ -95,6 +95,8 @@ FIB_EXTENSION_TP4 = float(os.environ.get("PICASSO_TP4", "2.618"))    # ✅ 2.618
 MAX_DIP_PERCENT = float(os.environ.get("PICASSO_MAX_DIP", "2.0"))    # Max 2% dip into golden zone
 VOLUME_CONFIRMATION = float(os.environ.get("PICASSO_VOL_MULT", "1.5"))  # Volume spike on bounce
 TOUCH_TOL_PCT = float(os.environ.get("PICASSO_TOUCH_TOL", "0.02"))   # Level-touch tolerance, fraction of swing range
+TREND_SMA = int(os.environ.get("PICASSO_TREND_SMA", "200"))          # Bullish-only filter: close > SMA(n); 0 disables
+SOUND_ON = (os.environ.get("PICASSO_SOUND", "1") == "1")             # Audible alerts on trade events
 
 # Risk Management
 RISK_AMOUNT_USD = float(os.environ.get("PICASSO_RISK_USD", "1000"))  # $1000 per trade (user's proven amount)
@@ -139,6 +141,23 @@ def safe_float(x, default=0.0):
         return float(x)
     except Exception:
         return default
+
+def play_alert(kind):
+    """Audible cue for trade events (Windows beeps, non-blocking). PICASSO_SOUND=0 disables."""
+    if not SOUND_ON:
+        return
+    try:
+        import winsound, threading
+        seq = {
+            "entry": ((880, 120), (1175, 160)),
+            "tp": ((1319, 90), (1568, 140)),
+            "stop": ((330, 350),),
+            "liq": ((494, 120), (392, 120), (294, 300)),
+        }.get(kind)
+        if seq:
+            threading.Thread(target=lambda: [winsound.Beep(f, d) for f, d in seq], daemon=True).start()
+    except Exception:
+        pass
 
 # ========== FIBONACCI CALCULATIONS ==========
 
@@ -212,6 +231,12 @@ def check_pullback_entry(df, fib_levels):
     """
     if len(df) < 25:  # Need more data for double bottom detection
         return False
+
+    # STEP 0: Bullish regime only (promised by the docs since day one, now enforced)
+    if TREND_SMA:
+        sma = float(df["close"].tail(TREND_SMA).astype(float).mean())
+        if float(df.iloc[-1]["close"]) <= sma:
+            return False
 
     current = df.iloc[-1]
     previous = df.iloc[-2]
@@ -396,9 +421,12 @@ def market_metrics(df, fib_levels):
         lows = df["low"].tail(15).astype(float)
         touches = sum(1 for lo in lows if abs(lo - golden) <= tol)
         bouncing = float(df.iloc[-1]["close"]) > float(df.iloc[-2]["close"])
-        return {"vol_ratio": cur_vol / avg_vol, "touches": touches, "bouncing": bouncing}
+        sma = float(df["close"].tail(TREND_SMA).astype(float).mean()) if TREND_SMA else 0.0
+        bullish = (not TREND_SMA) or float(df.iloc[-1]["close"]) > sma
+        return {"vol_ratio": cur_vol / avg_vol, "touches": touches, "bouncing": bouncing,
+                "bullish": bullish, "sma": sma}
     except Exception:
-        return {"vol_ratio": 0.0, "touches": 0, "bouncing": False}
+        return {"vol_ratio": 0.0, "touches": 0, "bouncing": False, "bullish": False, "sma": 0.0}
 
 def build_header():
     mode = "[bold black on green] PAPER [/]" if PAPER_MODE else "[bold white on red] LIVE [/]"
@@ -503,6 +531,11 @@ def build_status(state):
 
     src = "[green]● live[/]" if state.get("price_live") else "[yellow]● candle[/]"
     grid.add_row("[bold]BTC Price[/]", f"[bold white]${price:,.2f}[/] {src}" if price else "—")
+    if TREND_SMA:
+        if metrics.get("bullish"):
+            grid.add_row(f"Trend (SMA{TREND_SMA})", "[bold green]BULL[/]")
+        else:
+            grid.add_row(f"Trend (SMA{TREND_SMA})", f"[bold red]BEAR — entries off[/] [dim]${metrics.get('sma', 0):,.0f}[/]")
 
     if fib and price:
         for label, key in (("→ Entry", "entry"), ("→ Gold Zone", "golden_zone"), ("→ Stop", "stop_loss")):
@@ -569,6 +602,13 @@ def build_stats(state):
     gpl = stats["gross_pl"]
     grid.add_row("Gross P/L", f"[{'bold green' if gpl >= 0 else 'bold red'}]{gpl:+,.2f} USD[/]")
 
+    closed = list(state.get("closed") or [])
+    if closed:
+        grid.add_row("[bold cyan]— Last closes —[/]", "")
+        for c in closed[-3:][::-1]:
+            style = "green" if c["pnl"] > 0 else "red"
+            grid.add_row(f"[dim]{c['when']}[/] {c['exit']}", f"[{style}]{c['pnl']:+,.0f}[/]")
+
     return Panel(grid, title="📜 Stats", border_style="cyan", box=box.ROUNDED)
 
 def build_footer(state):
@@ -601,9 +641,11 @@ def build_screen(state):
             Layout(build_fib_table(fib, state.get("price")), name="fib", size=14),
             Layout(build_chart(state), name="chart"),
         )
+        # Stats shrinks before status does on short windows
+        stats_size = 15 if console.size.height >= 42 else max(7, console.size.height - 25)
         layout["right"].split_column(
             Layout(build_status(state), name="status"),
-            Layout(build_stats(state), name="stats", size=12),
+            Layout(build_stats(state), name="stats", size=stats_size),
         )
     else:
         layout["body"].update(Panel(Align.center("[cyan]⏳ Fetching first candles from Binance US...[/]"),
@@ -896,7 +938,7 @@ def main():
     state = {"fib": None, "price": None, "price_live": False, "metrics": None,
              "position": position, "countdown": SCAN_INTERVAL,
              "started": time.time(), "scans": 0, "session_entries": 0, "session_pl": 0.0,
-             "closes": None,
+             "closes": None, "closed": deque(maxlen=20),
              "stats": load_json(STATS_FILE, {"trades": 0, "wins": 0, "losses": 0, "gross_pl": 0.0})}
 
     try:
@@ -935,7 +977,9 @@ def main():
                                 state["session_pl"] += realized
                                 record_trade("LIQUIDATED", liq, position["remaining"], realized)
                                 state["stats"] = update_stats(total)
+                                state["closed"].append({"when": now_str()[5:16], "exit": "LIQ", "pnl": total})
                                 log_event(f"[bold white on red]💀 LIQUIDATED at ${liq:,.2f} — margin wiped: ${realized:,.2f}[/bold white on red]")
+                                play_alert("liq")
                                 position = None
                                 save_json(POS_FILE, None)
 
@@ -954,6 +998,7 @@ def main():
                                         track_trade_profit(realized)
                                         record_trade(f"TP{i}", tp, slice_size, realized)
                                         log_event(f"[bold green]{'🎯' * i} TP{i} — sold {slice_size:.4f} BTC at ${tp:,.2f}, banked ${realized:,.2f}[/bold green]")
+                                        play_alert("tp")
                                         if i == 1 and position["stop_loss"] < entry:
                                             position["stop_loss"] = entry
                                             log_event("[cyan]🛡 Stop moved to breakeven[/cyan]")
@@ -962,6 +1007,7 @@ def main():
                                             total = position["realized"]
                                             log_event(f"[bold magenta]🎨 PICASSO COMPLETE — trade banked ${total:,.2f}[/bold magenta]")
                                             state["stats"] = update_stats(total)
+                                            state["closed"].append({"when": now_str()[5:16], "exit": "TP4", "pnl": total})
                                             position = None
                                             save_json(POS_FILE, None)
                                             break
@@ -976,6 +1022,10 @@ def main():
                                 state["stats"] = update_stats(total)
                                 label = "BREAKEVEN STOP" if stop_price >= entry else "STOP LOSS"
                                 log_event(f"[bold red]🛑 {label} at ${stop_price:,.2f} — trade total ${total:,.2f}[/bold red]")
+                                state["closed"].append({"when": now_str()[5:16],
+                                                        "exit": "BE-STOP" if stop_price >= entry else "STOP",
+                                                        "pnl": total})
+                                play_alert("stop")
                                 position = None
                                 save_json(POS_FILE, None)
 
@@ -1013,6 +1063,7 @@ def main():
                                     f"${entry_price:,.2f} · {position_size:.4f} BTC "
                                     f"(${entry_price * position_size:,.2f}) · stop ${stop_loss:,.2f}"
                                 )
+                                play_alert("entry")
 
                         state["position"] = position
 
