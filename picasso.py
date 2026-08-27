@@ -341,6 +341,26 @@ def track_trade_profit(trade_profit, customer_id="default"):
     save_json(LICENSE_FILE, license_data)
     return license_data
 
+# ========== TRADE RECORDING ==========
+
+def record_trade(event, price, size, pnl):
+    """Append one row to trades.csv - every event, wins AND losses."""
+    is_new = not TRADES_CSV.exists()
+    with open(TRADES_CSV, "a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow(["time", "event", "price", "size", "pnl"])
+        w.writerow([now_str(), event, f"{price:.2f}", f"{size:.6f}", f"{pnl:.2f}"])
+
+def update_stats(realized):
+    """Book one closed trade into stats.json. Gross P/L; losses count."""
+    stats = load_json(STATS_FILE, {"trades": 0, "wins": 0, "losses": 0, "gross_pl": 0.0})
+    stats["trades"] += 1
+    stats["wins" if realized > 0 else "losses"] += 1
+    stats["gross_pl"] += realized
+    save_json(STATS_FILE, stats)
+    return stats
+
 # ========== DISPLAY (full-screen Rich TUI) ==========
 
 EVENTS = deque(maxlen=100)
@@ -402,20 +422,31 @@ def build_fib_table(fib, price):
     return table
 
 def build_chart(state):
-    """Bar chart of recent 1h closes rendered in block characters."""
+    """Bar chart of recent 1h closes with the fib levels overlaid as lines."""
     closes = state.get("closes") or []
     fib = state.get("fib")
     if not closes:
         return Panel(Align.center("[dim]waiting for candles...[/]"), border_style="cyan", box=box.ROUNDED)
 
-    W, H = 54, 9
+    # Adapt to the actual pane: left column is ~half the terminal, minus borders
+    W = max(24, min(160, console.size.width // 2 - 6))
+    H = 9
     data = closes[-W:]
     lo, hi = min(data), max(data)
     span = (hi - lo) or 1.0
     heights = [1 + (c - lo) / span * (H - 1) for c in data]
 
+    # Which chart row each fib level lands on (only levels inside the window)
+    level_rows = {}
+    if fib:
+        for key, color in (("entry", "cyan"), ("golden_zone", "yellow"), ("stop_loss", "red")):
+            v = fib[key]
+            if lo <= v <= hi:
+                level_rows.setdefault(round(1 + (v - lo) / span * (H - 1)), color)
+
     lines = []
     for row in range(H, 0, -1):
+        line_color = level_rows.get(row)
         chars = []
         for j, h in enumerate(heights):
             if h >= row:
@@ -423,10 +454,12 @@ def build_chart(state):
             elif h >= row - 0.5:
                 ch = "▄"
             else:
-                ch = " "
-            if ch != " " and j == len(heights) - 1:
+                ch = f"[dim {line_color}]┄[/]" if line_color else " "
+                chars.append(ch)
+                continue
+            if j == len(heights) - 1:
                 ch = f"[bold magenta]{ch}[/]"
-            elif ch != " ":
+            else:
                 ch = f"[cyan]{ch}[/]"
             chars.append(ch)
         lines.append("".join(chars))
@@ -486,14 +519,41 @@ def build_status(state):
 
     return Panel(grid, title=title, border_style=style, box=box.ROUNDED)
 
+def build_stats(state):
+    stats = state.get("stats") or {"trades": 0, "wins": 0, "losses": 0, "gross_pl": 0.0}
+    up = int(time.time() - state.get("started", time.time()))
+    h, m = divmod(up // 60, 60)
+
+    grid = Table(box=None, expand=True, show_header=False, padding=(0, 1))
+    grid.add_column(style="white", no_wrap=True)
+    grid.add_column(justify="right", no_wrap=True)
+
+    grid.add_row("[bold cyan]— Session —[/]", "")
+    grid.add_row("Uptime", f"{h}h {m:02d}m")
+    grid.add_row("Scans", str(state.get("scans", 0)))
+    grid.add_row("Entries", str(state.get("session_entries", 0)))
+    spl = state.get("session_pl", 0.0)
+    grid.add_row("Realized P/L", f"[{'bold green' if spl >= 0 else 'bold red'}]{spl:+,.2f} USD[/]")
+
+    grid.add_row("[bold cyan]— Lifetime —[/]", "")
+    grid.add_row("Closed trades", str(stats["trades"]))
+    wr = (stats["wins"] / stats["trades"] * 100) if stats["trades"] else None
+    grid.add_row("Win rate", f"{wr:.1f}%  ({stats['wins']}W/{stats['losses']}L)" if wr is not None else "[dim]no trades yet[/]")
+    gpl = stats["gross_pl"]
+    grid.add_row("Gross P/L", f"[{'bold green' if gpl >= 0 else 'bold red'}]{gpl:+,.2f} USD[/]")
+
+    return Panel(grid, title="📜 Stats", border_style="cyan", box=box.ROUNDED)
+
 def build_footer(state):
     remaining = state.get("countdown", 0)
     mm, ss = divmod(max(0, remaining), 60)
+    filled = int((1 - remaining / max(1, SCAN_INTERVAL)) * 18)
+    bar = "█" * filled + "░" * (18 - filled)
     body = Text.from_markup("\n".join(list(EVENTS)[:8]) or "[dim]no events yet[/]")
     return Panel(
         body,
         title="🖊  Events",
-        subtitle=f"[bold cyan]next scan in {mm:02d}:{ss:02d}[/]  ·  [dim]scan every {SCAN_INTERVAL}s · Ctrl+C to stop[/]",
+        subtitle=f"[cyan]{bar}[/] [bold cyan]next scan {mm:02d}:{ss:02d}[/]  ·  [dim]Ctrl+C to stop[/]",
         border_style="blue", box=box.ROUNDED,
     )
 
@@ -508,11 +568,15 @@ def build_screen(state):
     if fib:
         layout["body"].split_row(
             Layout(name="left"),
-            Layout(build_status(state), name="status"),
+            Layout(name="right"),
         )
         layout["left"].split_column(
             Layout(build_fib_table(fib, state.get("price")), name="fib", size=14),
             Layout(build_chart(state), name="chart"),
+        )
+        layout["right"].split_column(
+            Layout(build_status(state), name="status"),
+            Layout(build_stats(state), name="stats", size=12),
         )
     else:
         layout["body"].update(Panel(Align.center("[cyan]⏳ Fetching first candles from Binance US...[/]"),
@@ -604,13 +668,17 @@ def main():
     log_event(f"[cyan]PICASSO online — watching {SYMBOL} {TIMEFRAME} for double bottom at gold zone[/cyan]")
 
     state = {"fib": None, "price": None, "price_live": False, "metrics": None,
-             "position": position, "countdown": SCAN_INTERVAL}
+             "position": position, "countdown": SCAN_INTERVAL,
+             "started": time.time(), "scans": 0, "session_entries": 0, "session_pl": 0.0,
+             "closes": None,
+             "stats": load_json(STATS_FILE, {"trades": 0, "wins": 0, "losses": 0, "gross_pl": 0.0})}
 
     try:
         with Live(build_screen(state), console=console, screen=True, refresh_per_second=4) as live:
             while True:
                 try:
                     # ---- SCAN: fetch 1h candles, recompute levels, run trade logic ----
+                    state["scans"] += 1
                     ohlcv = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=200)
                     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
 
@@ -638,17 +706,25 @@ def main():
                                     log_event(f"[bold green]{'🎯' * i} TP{i} HIT! Profit: ${profit:,.2f}[/bold green]")
                                     position[f"tp{i}_hit"] = True
                                     track_trade_profit(profit)
+                                    record_trade(f"TP{i}", current_price, position["size"], profit)
                                     save_json(POS_FILE, position)
                                     if i == 4:
+                                        realized = (current_price - entry) * position["size"]
                                         log_event("[bold magenta]🎨 PICASSO COMPLETE! All TPs hit, closing position.[/bold magenta]")
+                                        record_trade("CLOSE", current_price, position["size"], realized)
+                                        state["stats"] = update_stats(realized)
+                                        state["session_pl"] += realized
                                         position = None
                                         save_json(POS_FILE, None)
                                         break
 
                             # Stop loss check
                             if position and current_price <= stop:
-                                loss = (entry - current_price) * position["size"]
-                                log_event(f"[bold red]🛑 STOP LOSS HIT! Loss: -${loss:,.2f}[/bold red]")
+                                realized = (current_price - entry) * position["size"]
+                                log_event(f"[bold red]🛑 STOP LOSS HIT! Loss: ${realized:,.2f}[/bold red]")
+                                record_trade("STOP", current_price, position["size"], realized)
+                                state["stats"] = update_stats(realized)
+                                state["session_pl"] += realized
                                 position = None
                                 save_json(POS_FILE, None)
 
@@ -675,6 +751,8 @@ def main():
                                     "tp4_hit": False
                                 }
                                 save_json(POS_FILE, position)
+                                record_trade("ENTRY", entry_price, position_size, 0.0)
+                                state["session_entries"] += 1
                                 log_event(
                                     f"[bold green]🚀 PICASSO ENTRY[/bold green] "
                                     f"${entry_price:,.2f} · {position_size:.4f} BTC "
