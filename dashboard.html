@@ -80,6 +80,10 @@
       <div class="panel"><h2>🧾 LAST CLOSES</h2><table id="closes"></table></div>
     </div>
     <div class="panel" style="margin-top:12px">
+      <h2>💰 SESSION EQUITY</h2>
+      <canvas id="equity" width="600" height="80" style="height:80px"></canvas>
+    </div>
+    <div class="panel" style="margin-top:12px">
       <h2>🖊 EVENTS</h2><div class="events" id="events"></div>
     </div>
   </div>
@@ -224,6 +228,30 @@ function render(s) {
     || '<tr><td class="dim">none this session</td></tr>';
 
   $("events").innerHTML = (s.events || []).map(e => `<div>${e}</div>`).join("");
+
+  // session equity step chart
+  const ec = $("equity"), ectx = ec.getContext("2d");
+  ec.width = ec.clientWidth * devicePixelRatio; ec.height = 80 * devicePixelRatio;
+  ectx.scale(devicePixelRatio, devicePixelRatio);
+  const EW = ec.clientWidth, EH = 80;
+  ectx.clearRect(0, 0, EW, EH);
+  const pts = [{t: s.started, pl: 0}, ...(s.equity || []), {t: s.now, pl: s.session_pl}];
+  const vals = pts.map(p => p.pl);
+  let elo = Math.min(...vals, 0), ehi = Math.max(...vals, 0);
+  const epad = (ehi - elo) * 0.1 || 1; elo -= epad; ehi += epad;
+  const EX = t => 4 + (t - pts[0].t) / Math.max(1, s.now - pts[0].t) * (EW - 8);
+  const EY = v => EH - 6 - (v - elo) / (ehi - elo) * (EH - 12);
+  ectx.strokeStyle = "#3a4166"; ectx.setLineDash([3, 4]);
+  ectx.beginPath(); ectx.moveTo(0, EY(0)); ectx.lineTo(EW, EY(0)); ectx.stroke(); ectx.setLineDash([]);
+  ectx.beginPath();
+  pts.forEach((p, i) => {
+    const x = EX(p.t), y = EY(p.pl);
+    if (i === 0) ectx.moveTo(x, y);
+    else { ectx.lineTo(x, EY(pts[i - 1].pl)); ectx.lineTo(x, y); }  // step
+  });
+  ectx.strokeStyle = s.session_pl >= 0 ? "#46d97c" : "#ff5d6c"; ectx.lineWidth = 1.6; ectx.stroke();
+  ectx.fillStyle = "#9aa3c7"; ectx.font = "10px monospace";
+  ectx.fillText(usd(s.session_pl), 6, 12);
 }
 
 async function tick() {

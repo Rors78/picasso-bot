@@ -281,6 +281,12 @@ def check_pullback_entry(df, fib_levels):
     if len(df) < 25:  # Need more data for double bottom detection
         return False
 
+    # STEP -1: A flat market has no pullback structure. Without this, a
+    # stablecoin's $0.0002 "swing" sizes an absurd position whose stop is
+    # microscopically close - at 10x that was -$10,000 per USDC trade.
+    if fib_levels["range"] < float(df.iloc[-1]["close"]) * (MIN_RANGE_PCT / 100.0):
+        return False
+
     # STEP 0: Bullish regime only (promised by the docs since day one, now enforced)
     if TREND_SMA:
         sma = float(df["close"].tail(TREND_SMA).astype(float).mean())
@@ -991,6 +997,73 @@ def run_backtest(days=60):
         title="📜 Backtest Summary", border_style="cyan",
     ))
 
+def run_backtest_all(days=60):
+    """Backtest the whole SYMBOLS roster, each pair at its own max leverage."""
+    global LEVERAGE
+    console.print(f"\n[bold cyan]🎨 PICASSO FLEET BACKTEST — {len(SYMBOLS)} pairs · last {days} days[/bold cyan]")
+    ex, src = history_exchange(days)
+    console.print(f"[dim]history source: {src}[/dim]\n")
+    saved_lev = LEVERAGE
+    rows, all_trades = [], []
+    for sym in SYMBOLS:
+        try:
+            lev = sym_leverage(sym)
+            df = fetch_history(ex, days, symbol=sym)
+            if len(df) < 150:
+                rows.append({"sym": sym, "err": f"only {len(df)} candles"})
+                continue
+            LEVERAGE = lev
+            trades, max_dd = simulate(df)
+            wins = sum(1 for t in trades if t["pnl"] > 0)
+            gross = sum(t["pnl"] for t in trades)
+            rows.append({"sym": sym, "lev": lev, "n": len(trades), "wins": wins,
+                         "gross": gross, "dd": max_dd})
+            for t in trades:
+                t["sym"] = sym
+            all_trades.extend(trades)
+        except Exception as e:
+            rows.append({"sym": sym, "err": str(e)[:60]})
+        finally:
+            LEVERAGE = saved_lev
+
+    t = Table(box=box.ROUNDED, border_style="cyan", title="Fleet Backtest (per pair)")
+    for col, j in (("Pair", "left"), ("Lev", "right"), ("Trades", "right"),
+                   ("Win rate", "right"), ("Gross P/L", "right"), ("Max DD", "right")):
+        t.add_column(col, justify=j)
+    for r in sorted(rows, key=lambda r: r.get("gross", -1e18), reverse=True):
+        if "err" in r:
+            t.add_row(r["sym"], "—", "—", "—", f"[yellow]{r['err']}[/]", "—")
+            continue
+        wr = f"{r['wins']/r['n']*100:.0f}%" if r["n"] else "—"
+        style = "green" if r["gross"] > 0 else ("red" if r["gross"] < 0 else "dim")
+        t.add_row(r["sym"], f"{r['lev']:.0f}x", str(r["n"]), wr,
+                  f"[{style}]{r['gross']:+,.0f}[/]", f"${r['dd']:,.0f}")
+    console.print(t)
+
+    if all_trades:
+        all_trades.sort(key=lambda x: x["when"])
+        cum, run, peak, dd = [], 0.0, 0.0, 0.0
+        for tr in all_trades:
+            run += tr["pnl"]
+            cum.append(run)
+            peak = max(peak, run)
+            dd = max(dd, peak - run)
+        lo_c, hi_c = min(cum + [0.0]), max(cum + [0.0])
+        span = (hi_c - lo_c) or 1.0
+        blocks = "▁▂▃▄▅▆▇█"
+        spark = "".join(blocks[min(7, int((v - lo_c) / span * 7.999))] for v in cum)
+        n = len(all_trades)
+        wins = sum(1 for x in all_trades if x["pnl"] > 0)
+        gross = sum(x["pnl"] for x in all_trades)
+        g_style = "bold green" if gross >= 0 else "bold red"
+        console.print(f"[bold]Fleet equity:[/] [cyan]{spark}[/]")
+        console.print(Panel.fit(
+            f"[bold]Fleet total:[/] {n} trades · WR {wins/n*100:.1f}% ({wins}W/{n-wins}L) · "
+            f"gross [{g_style}]{gross:+,.2f} USD[/] · combined max DD ${dd:,.2f}\n"
+            f"[dim]Each pair simulated independently at its own leverage; no shared capital "
+            f"constraint. Scaled exits, gross P/L, no fees.[/dim]",
+            title="🚁 Fleet Verdict", border_style="cyan"))
+
 # ========== TUNER ==========
 
 def sweep_grid(df):
@@ -1153,6 +1226,7 @@ def state_snapshot(state):
         "session_entries": state.get("session_entries", 0),
         "stats": state.get("stats"), "hot": hot_symbol(state),
         "min_range_pct": MIN_RANGE_PCT,
+        "equity": (state.get("equity") or [])[-200:],
         "closed": list(state.get("closed") or []),
         "events": [_strip_markup(e) for e in list(EVENTS)[:30]],
         "now": time.time(), "syms": syms_out,
@@ -1342,7 +1416,7 @@ def main():
                       for sym in SYMBOLS},
              "countdown": SCAN_INTERVAL,
              "started": time.time(), "scans": 0, "session_entries": 0, "session_pl": 0.0,
-             "closed": deque(maxlen=20),
+             "closed": deque(maxlen=20), "equity": [],
              "stats": load_json(STATS_FILE, {"trades": 0, "wins": 0, "losses": 0, "gross_pl": 0.0})}
 
     if PAPER_MODE:
@@ -1355,10 +1429,14 @@ def main():
             while True:
                 # ---- SCAN SWEEP: every symbol, repainting as results land ----
                 for sym in SYMBOLS:
+                    prev_pl = state["session_pl"]
                     try:
                         scan_symbol(ex, sym, state)
                     except Exception as e:
                         log_event(f"[red]❌ {sym} scan error: {e}[/red]")
+                    if state["session_pl"] != prev_pl:
+                        state["equity"].append({"t": time.time(), "pl": state["session_pl"]})
+                        state["equity"] = state["equity"][-500:]
                     live.update(build_screen(state))
                 state["scans"] += 1
 
@@ -1384,8 +1462,13 @@ def main():
 if __name__ == "__main__":
     if "--backtest" in sys.argv:
         idx = sys.argv.index("--backtest")
-        bt_days = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 and sys.argv[idx + 1].isdigit() else 60
-        run_backtest(bt_days)
+        bt_args = sys.argv[idx + 1: idx + 3]
+        if bt_args and bt_args[0].lower() == "all":
+            bt_days = int(bt_args[1]) if len(bt_args) > 1 and bt_args[1].isdigit() else 60
+            run_backtest_all(bt_days)
+        else:
+            bt_days = int(bt_args[0]) if bt_args and bt_args[0].isdigit() else 60
+            run_backtest(bt_days)
         sys.exit(0)
 
     if "--tune" in sys.argv:
