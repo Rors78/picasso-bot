@@ -14,6 +14,9 @@ rem Restart semantics: kill any running Picasso first, then start fresh.
 rem Kills ONLY picasso.py by command line - never other python bots in the fleet.
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name LIKE 'python%%'\" | Where-Object { $_.CommandLine -match 'picasso\.py' } | ForEach-Object { Write-Host ('  Restarting: killing old PICASSO (PID ' + $_.ProcessId + ')'); Stop-Process -Id $_.ProcessId -Force }"
 
+rem Open the web dashboard once the bot's server is up
+start "" cmd /c "timeout /t 5 /nobreak >nul & start "" http://localhost:8877"
+
 python picasso.py
 echo.
 echo  PICASSO stopped.

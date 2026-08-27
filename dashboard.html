@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PICASSO 🎨</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0a0d18; --panel: #101426; --panel2: #0d1120; --line: #1d2440;
+    --text: #d7dcf0; --dim: #6b7394; --cyan: #38d8f5; --gold: #e8c34a;
+    --green: #46d97c; --bgreen: #6dff9e; --red: #ff5d6c; --magenta: #ff5df1;
+    --white: #f4f6ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.45 "Cascadia Code", Consolas, monospace; padding: 14px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+           border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 10px 16px; margin-bottom: 12px; }
+  header h1 { font-size: 16px; color: var(--cyan); font-weight: 600; }
+  .badge { padding: 2px 9px; border-radius: 5px; font-weight: 700; font-size: 11px; }
+  .b-paper { background: #123c22; color: var(--bgreen); }
+  .b-lev { background: #401019; color: var(--red); }
+  .b-live { background: #431016; color: #fff; }
+  .meta { color: var(--dim); }
+  .countdown { margin-left: auto; color: var(--cyan); }
+  .grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; }
+  .panel { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 10px 12px; }
+  .panel h2 { font-size: 12px; color: var(--cyan); font-weight: 600; letter-spacing: .08em; margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: right; color: var(--dim); font-weight: 400; font-size: 11px; padding: 2px 6px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  td { text-align: right; padding: 2.5px 6px; white-space: nowrap; }
+  tr.sym { cursor: pointer; }
+  tr.sym:hover { background: #151b33; }
+  tr.hot { background: #171331; outline: 1px solid #3c2a6e; }
+  tr.pos td:first-child { color: var(--magenta); font-weight: 700; }
+  .dim { color: var(--dim); } .green { color: var(--green); } .red { color: var(--red); }
+  .gold { color: var(--gold); } .cyan { color: var(--cyan); } .white { color: var(--white); }
+  .bgreen { color: var(--bgreen); } .magenta { color: var(--magenta); }
+  canvas { width: 100%; height: 230px; background: var(--panel2); border-radius: 6px; }
+  .kv { display: grid; grid-template-columns: auto auto; gap: 1px 10px; }
+  .kv div:nth-child(even) { text-align: right; }
+  .events { max-height: 180px; overflow-y: auto; font-size: 12px; }
+  .events div { padding: 1px 0; color: var(--dim); }
+  .events div:first-child { color: var(--text); }
+  #conn { display: none; margin-bottom: 10px; padding: 8px 14px; border-radius: 8px;
+          background: #43101a; color: var(--red); border: 1px solid #6e2030; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .ladder td { padding: 1.5px 6px; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div id="conn">⚠ connecting to PICASSO… (is the bot running?)</div>
+<header>
+  <h1>🎨 PICASSO Fibonacci Trader</h1>
+  <span class="meta" id="meta">KRAKEN · … pairs · 1h</span>
+  <span class="badge b-paper" id="mode">PAPER</span>
+  <span class="badge b-lev" id="lev">LEV SIM</span>
+  <span class="countdown" id="countdown"></span>
+</header>
+
+<div class="grid">
+  <div>
+    <div class="panel">
+      <h2>🛰 SYMBOLS <span class="dim" style="float:right" id="pinned"></span></h2>
+      <table id="symtab"></table>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2 id="charttitle">📈 CHART</h2>
+      <canvas id="chart" width="900" height="230"></canvas>
+    </div>
+  </div>
+  <div>
+    <div class="cols">
+      <div class="panel"><h2 id="ladtitle">📐 LADDER</h2><table class="ladder" id="ladder"></table></div>
+      <div class="panel"><h2 id="stattitle">📊 MARKET</h2><div class="kv" id="market"></div></div>
+    </div>
+    <div class="cols" style="margin-top:12px">
+      <div class="panel"><h2>📜 STATS</h2><div class="kv" id="stats"></div></div>
+      <div class="panel"><h2>🧾 LAST CLOSES</h2><table id="closes"></table></div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>🖊 EVENTS</h2><div class="events" id="events"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let pinned = null;   // click a row to pin the detail panels; click again to unpin
+
+const $ = id => document.getElementById(id);
+const fmt = v => v == null ? "—"
+  : v >= 1000 ? "$" + v.toLocaleString(undefined, {maximumFractionDigits: 2})
+  : v >= 1 ? "$" + v.toFixed(4)
+  : v >= 0.001 ? "$" + v.toFixed(6)
+  : "$" + v.toExponential(2);
+const usd = v => (v >= 0 ? "+" : "") + v.toLocaleString(undefined, {maximumFractionDigits: 2}) + " USD";
+
+function symRow(sym, d, hot) {
+  const base = sym.split("/")[0];
+  const m = d.metrics || {}, f = d.fib, p = d.price;
+  const flat = f && p && f.range < p * (window._minRange / 100);
+  const dist = flat ? '<span class="dim">flat</span>'
+    : (f && p) ? ((p - f.entry) / p * 100).toFixed(1) + "%" : "—";
+  const trend = flat ? '<span class="dim">·</span>' : m.bullish ? '<span class="green">B</span>' : '<span class="dim">·</span>';
+  let pl = '<span class="dim">—</span>', cls = "sym";
+  if (d.position) {
+    const pos = d.position;
+    const u = (p - pos.entry) * (pos.remaining ?? pos.size) + (pos.realized || 0);
+    pl = `<span class="${u >= 0 ? "green" : "red"}">${u >= 0 ? "+" : ""}${u.toFixed(0)}</span>`;
+    cls += " pos";
+  }
+  if (sym === hot) cls += " hot";
+  return `<tr class="${cls}" data-sym="${sym}"><td>${sym === hot ? "▶ " : ""}${base}</td>
+    <td>${fmt(p)}${d.live ? ' <span class="green">●</span>' : ''}</td><td>${dist}</td>
+    <td>${m.touches ?? "—"}</td><td>${(m.vol_ratio || 0).toFixed(1)}</td>
+    <td>${trend}</td><td class="dim">${d.leverage}x</td><td>${pl}</td></tr>`;
+}
+
+function drawChart(d) {
+  const c = $("chart"), ctx = c.getContext("2d");
+  c.width = c.clientWidth * devicePixelRatio; c.height = 230 * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  const W = c.clientWidth, H = 230;
+  ctx.clearRect(0, 0, W, H);
+  const closes = d.closes || [];
+  if (!closes.length) return;
+  const f = d.fib;
+  let lo = Math.min(...closes), hi = Math.max(...closes);
+  if (f) { lo = Math.min(lo, f.stop_loss); hi = Math.max(hi, f.entry); }
+  const pad = (hi - lo) * 0.06 || 1e-9; lo -= pad; hi += pad;
+  const X = i => 6 + i / (closes.length - 1) * (W - 12);
+  const Y = v => H - 8 - (v - lo) / (hi - lo) * (H - 16);
+  // fib level lines - TV palette: entry white, gold zone + stop yellow, TP1 green
+  if (f) {
+    const levels = [["entry", "#f4f6ff"], ["golden_zone", "#e8c34a"], ["stop_loss", "#e8c34a"], ["tp1", "#46d97c"]];
+    for (const [k, col] of levels) {
+      const v = f[k]; if (v < lo || v > hi) continue;
+      ctx.strokeStyle = col; ctx.globalAlpha = 0.55; ctx.setLineDash([5, 5]);
+      ctx.beginPath(); ctx.moveTo(0, Y(v)); ctx.lineTo(W, Y(v)); ctx.stroke();
+      ctx.globalAlpha = 0.9; ctx.fillStyle = col; ctx.font = "10px monospace";
+      ctx.fillText(k.replace("_", " "), 4, Y(v) - 3);
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+  }
+  // price line + soft fill
+  ctx.beginPath();
+  closes.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
+  ctx.strokeStyle = "#38d8f5"; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.lineTo(X(closes.length - 1), H); ctx.lineTo(X(0), H); ctx.closePath();
+  ctx.fillStyle = "rgba(56,216,245,0.07)"; ctx.fill();
+  const lastY = Y(closes[closes.length - 1]);
+  ctx.fillStyle = "#ff5df1"; ctx.beginPath();
+  ctx.arc(X(closes.length - 1), lastY, 3.4, 0, 7); ctx.fill();
+}
+
+function render(s) {
+  window._minRange = s.min_range_pct || 0.5;
+  $("meta").textContent = `KRAKEN · ${Object.keys(s.syms).length} pairs · ${s.timeframe} · $${s.risk} risk/trade`;
+  $("mode").textContent = s.paper ? "PAPER" : "LIVE";
+  $("mode").className = "badge " + (s.paper ? "b-paper" : "b-live");
+  const mm = String(Math.floor(s.countdown / 60)).padStart(2, "0"), ss = String(s.countdown % 60).padStart(2, "0");
+  $("countdown").textContent = `next scan ${mm}:${ss}`;
+  const sel = (pinned && s.syms[pinned]) ? pinned : s.hot;
+  $("pinned").textContent = pinned ? `pinned: ${pinned} (click to unpin)` : "following hot symbol";
+
+  $("symtab").innerHTML =
+    `<tr><th>Sym</th><th>Price</th><th>→Ent</th><th>T</th><th>Vol</th><th>Trd</th><th>Lev</th><th>P/L</th></tr>` +
+    Object.entries(s.syms).map(([sym, d]) => symRow(sym, d, sel)).join("");
+  document.querySelectorAll("tr.sym").forEach(tr =>
+    tr.onclick = () => { pinned = (pinned === tr.dataset.sym) ? null : tr.dataset.sym; });
+
+  const d = s.syms[sel] || {};
+  $("charttitle").textContent = `📈 ${sel} · last ${(d.closes || []).length}h`;
+  drawChart(d);
+
+  const f = d.fib;
+  $("ladtitle").textContent = `📐 ${sel} LADDER`;
+  if (f) {
+    const rows = [
+      [`TP4 (2.618)`, f.tp4, "bgreen"], [`TP3 (1.618)`, f.tp3, "green"],
+      [`TP2 (1.382)`, f.tp2, "green"], [`TP1 (1.0)`, f.tp1, "green"],
+      ["Swing High", f.swing_high, "green"], ["ENTRY (0.382)", f.entry, "white"],
+      ["GOLD (0.5)", f.golden_zone, "gold"], ["STOP (0.618)", f.stop_loss, "gold"],
+      ["Swing Low", f.swing_low, "dim"]];
+    let nearest = 0, best = 1e18;
+    rows.forEach(([, v], i) => { const dd = Math.abs(v - d.price); if (dd < best) { best = dd; nearest = i; } });
+    $("ladder").innerHTML = rows.map(([n, v, cls], i) =>
+      `<tr><td class="${cls}">${n}</td><td>${fmt(v)}</td><td>${i === nearest ? '<span class="magenta">◀</span>' : ''}</td></tr>`).join("");
+  } else $("ladder").innerHTML = '<tr><td class="dim">waiting for candles…</td></tr>';
+
+  const m = d.metrics || {}, pos = d.position;
+  let mk = [["Price", `<span class="white">${fmt(d.price)}</span> ${d.live ? '<span class="green">● live</span>' : '<span class="gold">● candle</span>'}`],
+            ["Trend (SMA200)", m.bullish ? '<span class="green">BULL</span>' : '<span class="red">BEAR — entries off</span>']];
+  if (pos) {
+    const rem = pos.remaining ?? pos.size, u = (d.price - pos.entry) * rem;
+    $("stattitle").textContent = `📊 ${sel} — POSITION OPEN`;
+    mk.push(["Entry", fmt(pos.entry)], ["Size left", `${rem.toFixed(4)} / ${pos.size.toFixed(4)}`],
+      ["Stop", fmt(pos.stop_loss) + (pos.stop_loss >= pos.entry ? ' <span class="cyan">(breakeven)</span>' : "")],
+      ["Leverage", `<span class="red">${pos.leverage}x · liq ${fmt(pos.liq)}</span>`],
+      ["Banked", `<span class="green">${usd(pos.realized || 0)}</span>`],
+      ["Unrealized", `<span class="${u >= 0 ? "green" : "red"}">${usd(u)}</span>`],
+      ["Targets", [1, 2, 3, 4].map(i => pos["tp" + i + "_hit"] ? `<span class="green">TP${i}✓</span>` : `<span class="dim">TP${i}·</span>`).join(" ")]);
+  } else {
+    $("stattitle").textContent = `📊 ${sel} — waiting for setup`;
+    mk.push(["Gold-zone touches", `${m.touches ?? 0}/2`],
+      ["Volume vs 20-avg", `${(m.vol_ratio || 0).toFixed(2)}x`],
+      ["Bouncing up", m.bouncing ? '<span class="green">YES</span>' : '<span class="dim">no</span>']);
+  }
+  $("market").innerHTML = mk.map(([k, v]) => `<div class="dim">${k}</div><div>${v}</div>`).join("");
+
+  const st = s.stats || {}, up = Math.floor((s.now - s.started) / 60);
+  const wr = st.trades ? (st.wins / st.trades * 100).toFixed(1) + `% (${st.wins}W/${st.losses}L)` : "no trades yet";
+  $("stats").innerHTML = [
+    ["Uptime", `${Math.floor(up / 60)}h ${String(up % 60).padStart(2, "0")}m`], ["Scans", s.scans],
+    ["Entries", s.session_entries], ["Session P/L", `<span class="${s.session_pl >= 0 ? "green" : "red"}">${usd(s.session_pl)}</span>`],
+    ["Closed trades", st.trades || 0], ["Win rate", wr],
+    ["Gross P/L", `<span class="${(st.gross_pl || 0) >= 0 ? "green" : "red"}">${usd(st.gross_pl || 0)}</span>`],
+  ].map(([k, v]) => `<div class="dim">${k}</div><div>${v}</div>`).join("");
+
+  $("closes").innerHTML = (s.closed || []).slice(-8).reverse().map(c =>
+    `<tr><td class="dim">${c.when}</td><td>${c.sym || ""}</td><td>${c.exit}</td>
+     <td class="${c.pnl > 0 ? "green" : "red"}">${c.pnl >= 0 ? "+" : ""}${c.pnl.toFixed(0)}</td></tr>`).join("")
+    || '<tr><td class="dim">none this session</td></tr>';
+
+  $("events").innerHTML = (s.events || []).map(e => `<div>${e}</div>`).join("");
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    const s = await r.json();
+    $("conn").style.display = "none";
+    if (s.ready) render(s);
+  } catch (e) {
+    $("conn").style.display = "block";
+  }
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>

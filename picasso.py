@@ -34,7 +34,8 @@ Features:
 - Profit tracking with lease model support
 """
 
-import os, sys, time, json, csv
+import os, sys, time, json, csv, re, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime, timezone
 from statistics import mean
@@ -1122,6 +1123,75 @@ def run_walkforward(days=270, tune_days=90, test_days=30):
         f"[dim]This is the honest number: every trade here was taken on data the tuner never saw.[/dim]",
         title="🧪 Walk-Forward Verdict", border_style="cyan"))
 
+# ========== WEB DASHBOARD ==========
+
+HTTP_PORT = int(os.environ.get("PICASSO_HTTP_PORT", "8877"))
+_WEB_STATE = {"state": None}
+_TAG_RE = re.compile(r"\[/?[^\[\]]*\]")
+
+def _strip_markup(s):
+    return _TAG_RE.sub("", s)
+
+def state_snapshot(state):
+    """JSON-safe snapshot of live state for the web dashboard."""
+    if not state:
+        return {"ready": False}
+    syms_out = {}
+    for sym, d in state["syms"].items():
+        syms_out[sym] = {
+            "price": d.get("price"), "live": bool(d.get("price_live")),
+            "fib": d.get("fib"), "metrics": d.get("metrics"),
+            "closes": (d.get("closes") or [])[-96:],
+            "leverage": sym_leverage(sym),
+            "position": d.get("position"),
+        }
+    return {
+        "ready": True, "app": APP, "paper": PAPER_MODE, "timeframe": TIMEFRAME,
+        "risk": RISK_AMOUNT_USD, "countdown": state.get("countdown", 0),
+        "scan_interval": SCAN_INTERVAL, "scans": state.get("scans", 0),
+        "started": state.get("started"), "session_pl": state.get("session_pl", 0.0),
+        "session_entries": state.get("session_entries", 0),
+        "stats": state.get("stats"), "hot": hot_symbol(state),
+        "min_range_pct": MIN_RANGE_PCT,
+        "closed": list(state.get("closed") or []),
+        "events": [_strip_markup(e) for e in list(EVENTS)[:30]],
+        "now": time.time(), "syms": syms_out,
+    }
+
+class _WebHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):  # keep the TUI console clean
+        pass
+
+    def do_GET(self):
+        try:
+            if self.path.startswith("/api/state"):
+                body = json.dumps(state_snapshot(_WEB_STATE["state"])).encode()
+                ctype = "application/json"
+            else:
+                body = (BASE / "dashboard.html").read_bytes()
+                ctype = "text/html; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception:
+            try:
+                self.send_error(500)
+            except Exception:
+                pass
+
+def start_web(state):
+    """Serve the dashboard on localhost only. Port busy -> log and carry on."""
+    _WEB_STATE["state"] = state
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", HTTP_PORT), _WebHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        log_event(f"[cyan]🌐 Web dashboard: http://localhost:{HTTP_PORT}[/cyan]")
+    except OSError as e:
+        log_event(f"[yellow]⚠ Web dashboard port {HTTP_PORT} unavailable: {e}[/yellow]")
+
 # ========== MAIN LOOP ==========
 
 def save_positions(state):
@@ -1278,6 +1348,7 @@ def main():
     if PAPER_MODE:
         log_event("[bold red]⚠ Leverage SIMULATION per Kraken margin caps — paper only; live is 1x[/bold red]")
     log_event(f"[cyan]PICASSO online — scanning {len(SYMBOLS)} Kraken pairs on {TIMEFRAME}[/cyan]")
+    start_web(state)
 
     try:
         with Live(build_screen(state), console=console, screen=True, refresh_per_second=4) as live:
