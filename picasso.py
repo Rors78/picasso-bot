@@ -648,6 +648,123 @@ def connect_exchange(live=True):
 
     return ex
 
+# ========== BACKTEST ==========
+
+def fetch_history(ex, days):
+    """Fetch `days` of 1h candles plus lookback, paginated."""
+    ms_per = 3600 * 1000
+    need = days * 24 + 130
+    since = ex.milliseconds() - need * ms_per
+    rows = {}
+    while True:
+        batch = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, since=since, limit=1000)
+        if not batch:
+            break
+        for r in batch:
+            rows[r[0]] = r
+        if len(batch) < 1000:
+            break
+        since = batch[-1][0] + ms_per
+    df = pd.DataFrame(sorted(rows.values()), columns=["timestamp", "open", "high", "low", "close", "volume"])
+    return df
+
+def run_backtest(days=60):
+    """Replay the exact live entry/exit logic over historical candles.
+
+    Caveats vs live: the live bot samples intrabar prices every 5 minutes;
+    here only completed 1h bars exist, so TPs use the bar HIGH and stops use
+    the bar LOW, with the stop checked FIRST when both hit in the same bar
+    (conservative). Positions still open at the end close at the last price.
+    """
+    console.print(f"\n[bold cyan]🎨 PICASSO BACKTEST — {SYMBOL} {TIMEFRAME}, last {days} days[/bold cyan]")
+    ex = ccxt.binanceus({"enableRateLimit": True, "timeout": 20000})
+    df = fetch_history(ex, days)
+    console.print(f"[dim]{len(df)} candles · "
+                  f"{datetime.fromtimestamp(df.iloc[0]['timestamp']/1000, tz=timezone.utc):%Y-%m-%d} → "
+                  f"{datetime.fromtimestamp(df.iloc[-1]['timestamp']/1000, tz=timezone.utc):%Y-%m-%d}[/dim]\n")
+
+    position, trades = None, []
+    equity = peak = max_dd = 0.0
+
+    def close_out(exit_label, exit_price, i):
+        nonlocal position, equity, peak, max_dd
+        realized = (exit_price - position["entry"]) * position["size"]
+        tps_hit = sum(1 for k in (1, 2, 3, 4) if position.get(f"tp{k}_hit"))
+        trades.append({
+            "when": datetime.fromtimestamp(df.iloc[position["entry_i"]]["timestamp"] / 1000, tz=timezone.utc),
+            "entry": position["entry"], "exit": exit_label, "exit_price": exit_price,
+            "tps": tps_hit, "pnl": realized, "bars": i - position["entry_i"],
+        })
+        equity += realized
+        peak = max(peak, equity)
+        max_dd = max(max_dd, peak - equity)
+        position = None
+
+    for i in range(120, len(df)):
+        window = df.iloc[max(0, i - 199): i + 1]
+        bar = df.iloc[i]
+
+        if position:
+            hi, lo = float(bar["high"]), float(bar["low"])
+            if lo <= position["stop_loss"]:
+                close_out("STOP", position["stop_loss"], i)
+                continue
+            for k in (1, 2, 3, 4):
+                if hi >= position[f"tp{k}"]:
+                    position[f"tp{k}_hit"] = True
+            if position.get("tp4_hit"):
+                close_out("TP4", position["tp4"], i)
+        else:
+            swing_low, swing_high = find_swing_high_low(window)
+            if swing_low is None:
+                continue
+            fib = calculate_fibonacci_levels(swing_low, swing_high)
+            if check_pullback_entry(window, fib):
+                entry, stop = fib["entry"], fib["stop_loss"]
+                position = {
+                    "entry": entry, "stop_loss": stop,
+                    "size": calculate_position_size(entry, stop, RISK_AMOUNT_USD),
+                    "tp1": fib["tp1"], "tp2": fib["tp2"], "tp3": fib["tp3"], "tp4": fib["tp4"],
+                    "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "tp4_hit": False,
+                    "entry_i": i,
+                }
+
+    if position:
+        close_out("EOD", float(df.iloc[-1]["close"]), len(df) - 1)
+
+    # ---- Report ----
+    if not trades:
+        console.print("[yellow]No entries triggered in this window — the setup never completed "
+                      "(double bottom + volume spike + bounce to entry).[/yellow]")
+        return
+
+    t = Table(box=box.ROUNDED, border_style="cyan", title="Trades")
+    for col, j in (("Entered (UTC)", "left"), ("Entry", "right"), ("Exit", "left"),
+                   ("Exit $", "right"), ("TPs", "center"), ("Bars", "right"), ("P/L", "right")):
+        t.add_column(col, justify=j)
+    for tr in trades[-25:]:
+        style = "green" if tr["pnl"] > 0 else "red"
+        t.add_row(f"{tr['when']:%m-%d %H:%M}", f"${tr['entry']:,.2f}", tr["exit"],
+                  f"${tr['exit_price']:,.2f}", f"{tr['tps']}/4", str(tr["bars"]),
+                  f"[{style}]{tr['pnl']:+,.2f}[/]")
+    console.print(t)
+
+    wins = [tr for tr in trades if tr["pnl"] > 0]
+    gross = sum(tr["pnl"] for tr in trades)
+    tp_rate = lambda k: sum(1 for tr in trades if tr["tps"] >= k) / len(trades) * 100
+    g_style = "bold green" if gross >= 0 else "bold red"
+    console.print(Panel.fit(
+        f"[bold]Trades:[/] {len(trades)}   [bold]Win rate:[/] {len(wins)/len(trades)*100:.1f}% "
+        f"({len(wins)}W/{len(trades)-len(wins)}L)\n"
+        f"[bold]Gross P/L:[/] [{g_style}]{gross:+,.2f} USD[/]   "
+        f"[bold]Avg/trade:[/] {gross/len(trades):+,.2f}   [bold]Max drawdown:[/] ${max_dd:,.2f}\n"
+        f"[bold]TP reach:[/] TP1 {tp_rate(1):.0f}% · TP2 {tp_rate(2):.0f}% · "
+        f"TP3 {tp_rate(3):.0f}% · TP4 {tp_rate(4):.0f}%\n"
+        f"[dim]Same entry logic as live; exits via bar high/low (stop checked first). "
+        f"Risk ${RISK_AMOUNT_USD:.0f}/trade, gross P/L, no fees.[/dim]",
+        title="📜 Backtest Summary", border_style="cyan",
+    ))
+
 # ========== MAIN LOOP ==========
 
 def main():
@@ -782,6 +899,12 @@ def main():
         console.print("\n[yellow]🛑 PICASSO Bot stopped by user[/yellow]")
 
 if __name__ == "__main__":
+    if "--backtest" in sys.argv:
+        idx = sys.argv.index("--backtest")
+        bt_days = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 and sys.argv[idx + 1].isdigit() else 60
+        run_backtest(bt_days)
+        sys.exit(0)
+
     console.print("[bold cyan]" + "="*60 + "[/bold cyan]")
     console.print("[bold cyan]  PICASSO Fibonacci Trader - Professional Edition  [/bold cyan]")
     console.print("[bold cyan]" + "="*60 + "[/bold cyan]\n")
