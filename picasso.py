@@ -508,6 +508,8 @@ def hot_symbol(state):
         f, p, m = d.get("fib"), d.get("price"), d.get("metrics") or {}
         if not f or not p or not m.get("bullish"):
             continue
+        if f["range"] < p * (MIN_RANGE_PCT / 100.0):
+            continue  # flat market (USDC) - can never enter, never interesting
         dist = abs(p - f["entry"]) / p
         if best_dist is None or dist < best_dist:
             best, best_dist = s, dist
@@ -525,10 +527,11 @@ def build_symbols_table(state, hot):
         p, f, m = d.get("price"), d.get("fib"), d.get("metrics") or {}
         pos = d.get("position")
         mark = "[bold magenta]▶[/]" if sym == hot else ""
-        dist = f"{(p - f['entry']) / p * 100:+.1f}%" if (p and f) else "—"
+        flat = bool(f and p and f["range"] < p * (MIN_RANGE_PCT / 100.0))
+        dist = "[dim]flat[/]" if flat else (f"{(p - f['entry']) / p * 100:+.1f}%" if (p and f) else "—")
         touches = str(m.get("touches", "—"))
         vol = f"{m.get('vol_ratio', 0):.1f}" if m else "—"
-        trend = "[green]B[/]" if m.get("bullish") else "[dim red]·[/]"
+        trend = "[dim]·[/]" if flat else ("[green]B[/]" if m.get("bullish") else "[dim red]·[/]")
         lev = f"{sym_leverage(sym):.0f}x"
         if pos:
             upnl = (p - pos["entry"]) * pos.get("remaining", pos["size"]) + pos.get("realized", 0.0) if p else 0.0
