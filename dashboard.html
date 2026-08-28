@@ -9,27 +9,30 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #04060d;
-    --panel: rgba(15, 20, 38, 0.66);
-    --panel-solid: #0d1120;
-    --inset: rgba(5, 8, 16, 0.75);
-    --line: rgba(96, 118, 190, 0.16);
-    --line-strong: rgba(120, 150, 235, 0.30);
-    --text: #dbe2f6;
-    --dim: #5f6a8f;
-    --dimmer: #3c4462;
-    --cyan: #35e0ff;
+    /* Industrial theme: carbon, gunmetal steel, amber, ember. Variable names
+       kept from the old palette so the wiring is untouched:
+       --cyan is now AMBER (primary accent), --magenta is EMBER (positions). */
+    --bg: #060708;
+    --panel: rgba(19, 22, 26, 0.72);
+    --panel-solid: #14171b;
+    --inset: rgba(8, 9, 11, 0.8);
+    --line: rgba(148, 158, 168, 0.13);
+    --line-strong: rgba(170, 180, 190, 0.26);
+    --text: #d8dde2;
+    --dim: #78828c;
+    --dimmer: #3d4449;
+    --cyan: #ffb02e;
     --gold: #f0c452;
-    --green: #2ede8a;
-    --bgreen: #7dffb8;
-    --red: #ff4d67;
-    --magenta: #c86bff;
-    --white: #f5f7ff;
+    --green: #35c95f;
+    --bgreen: #7dff9e;
+    --red: #f23f4f;
+    --magenta: #ff6b2b;
+    --white: #f5f7f4;
     --mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
     --disp: "Rajdhani", "Segoe UI", sans-serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html { scrollbar-color: #232b4a var(--bg); }
+  html { scrollbar-color: #2a2f34 var(--bg); }
   body {
     background: var(--bg); color: var(--text);
     font: 12.5px/1.5 var(--mono);
@@ -39,14 +42,14 @@
   body::before {
     content: ""; position: fixed; inset: 0; z-index: -2; pointer-events: none;
     background:
-      radial-gradient(1100px 600px at 12% -8%, rgba(53, 224, 255, 0.075), transparent 60%),
-      radial-gradient(900px 640px at 88% -12%, rgba(240, 196, 82, 0.06), transparent 60%),
-      radial-gradient(1200px 900px at 50% 118%, rgba(200, 107, 255, 0.05), transparent 55%),
+      radial-gradient(1100px 600px at 12% -8%, rgba(255, 176, 46, 0.05), transparent 60%),
+      radial-gradient(900px 640px at 88% -12%, rgba(170, 185, 200, 0.045), transparent 60%),
+      radial-gradient(1200px 900px at 50% 118%, rgba(255, 107, 43, 0.04), transparent 55%),
       var(--bg);
   }
   body::after {  /* faint dot lattice */
     content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .5;
-    background-image: radial-gradient(rgba(130, 155, 235, 0.05) 1px, transparent 1.4px);
+    background-image: radial-gradient(rgba(170, 185, 200, 0.05) 1px, transparent 1.4px);
     background-size: 26px 26px;
   }
 
@@ -54,21 +57,21 @@
   header {
     position: relative; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
     border: 1px solid var(--line-strong);
-    background: linear-gradient(160deg, rgba(24, 32, 62, 0.85), rgba(10, 13, 26, 0.9));
+    background: linear-gradient(160deg, rgba(32, 36, 41, 0.9), rgba(12, 14, 16, 0.92));
     border-radius: 14px; padding: 13px 20px 15px; margin-bottom: 14px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(160, 190, 255, 0.09);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(190, 200, 210, 0.09);
     overflow: hidden;
   }
   header::before {  /* sweeping sheen */
     content: ""; position: absolute; top: 0; left: -60%; width: 45%; height: 100%;
-    background: linear-gradient(105deg, transparent, rgba(140, 190, 255, 0.045), transparent);
+    background: linear-gradient(105deg, transparent, rgba(255, 176, 46, 0.04), transparent);
     animation: sheen 9s linear infinite; pointer-events: none;
   }
   @keyframes sheen { to { left: 130%; } }
   .logo { width: 34px; height: 34px; flex: 0 0 auto; filter: drop-shadow(0 0 8px rgba(240,196,82,.45)); }
   header h1 {
     font: 700 24px/1 var(--disp); letter-spacing: .14em; text-transform: uppercase;
-    background: linear-gradient(92deg, #fff 0%, var(--cyan) 45%, var(--gold) 100%);
+    background: linear-gradient(92deg, #fff 0%, var(--cyan) 55%, var(--magenta) 100%);
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
   h1 small { font-size: 13px; letter-spacing: .3em; color: var(--dim); -webkit-text-fill-color: var(--dim); }
@@ -77,18 +80,20 @@
     padding: 3px 11px; border-radius: 999px; font-weight: 700; font-size: 10.5px; letter-spacing: .1em;
     border: 1px solid;
   }
-  .b-paper { color: var(--bgreen); border-color: rgba(46, 222, 138, .5); background: rgba(46, 222, 138, .1);
-             box-shadow: 0 0 14px rgba(46, 222, 138, .18); }
-  .b-lev  { color: #ff97a6; border-color: rgba(255, 77, 103, .5); background: rgba(255, 77, 103, .1);
-            box-shadow: 0 0 14px rgba(255, 77, 103, .15); }
-  .b-live { color: #fff; border-color: var(--red); background: rgba(255, 77, 103, .35); }
-  .b-venue { color: #9fb4e8; border-color: rgba(120, 150, 235, .4); background: rgba(120, 150, 235, .08); }
+  .b-paper { color: var(--bgreen); border-color: rgba(53, 201, 95, .5); background: rgba(53, 201, 95, .1);
+             box-shadow: 0 0 14px rgba(53, 201, 95, .18); }
+  .b-lev  { color: #ff8d80; border-color: rgba(242, 63, 79, .5); background: rgba(242, 63, 79, .1);
+            box-shadow: 0 0 14px rgba(242, 63, 79, .15); }
+  .b-live { color: #fff; border-color: var(--red); background: rgba(242, 63, 79, .35); }
+  .b-venue { color: #aab6c2; border-color: rgba(170, 180, 190, .4); background: rgba(170, 180, 190, .08); }
+  .b-ws { color: var(--cyan); border-color: rgba(255, 176, 46, .5); background: rgba(255, 176, 46, .08);
+          box-shadow: 0 0 14px rgba(255, 176, 46, .15); }
   .countdown { margin-left: auto; text-align: right; }
-  .countdown b { font: 700 20px/1.1 var(--mono); color: var(--cyan); text-shadow: 0 0 12px rgba(53, 224, 255, .5); }
+  .countdown b { font: 700 20px/1.1 var(--mono); color: var(--cyan); text-shadow: 0 0 12px rgba(255, 176, 46, .45); }
   .countdown span { display: block; font-size: 10px; color: var(--dim); letter-spacing: .18em; }
   #scanbar { position: absolute; left: 0; bottom: 0; height: 2px; width: 0%;
-             background: linear-gradient(90deg, var(--cyan), var(--gold));
-             box-shadow: 0 0 10px rgba(53, 224, 255, .6); transition: width 1s linear; }
+             background: linear-gradient(90deg, var(--cyan), var(--magenta));
+             box-shadow: 0 0 10px rgba(255, 176, 46, .55); transition: width 1s linear; }
 
   /* ---------- KPI strip ---------- */
   .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 14px; }
@@ -109,16 +114,16 @@
   .panel {
     border: 1px solid var(--line); border-radius: 13px; padding: 12px 14px;
     background: var(--panel); backdrop-filter: blur(8px);
-    box-shadow: 0 8px 30px rgba(0, 0, 0, .38), inset 0 1px 0 rgba(160, 190, 255, .05);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, .38), inset 0 1px 0 rgba(190, 200, 210, .05);
   }
   .panel h2 {
     display: flex; align-items: center; gap: 8px;
-    font: 600 13px/1 var(--disp); letter-spacing: .24em; text-transform: uppercase; color: #8fd8ec;
+    font: 600 13px/1 var(--disp); letter-spacing: .24em; text-transform: uppercase; color: #b8c2cc;
     padding-bottom: 9px; margin-bottom: 9px; border-bottom: 1px solid var(--line);
   }
   .panel h2::before { content: ""; width: 7px; height: 7px; border-radius: 2px; transform: rotate(45deg);
-                      background: linear-gradient(135deg, var(--cyan), var(--gold)); flex: 0 0 auto;
-                      box-shadow: 0 0 8px rgba(53, 224, 255, .5); }
+                      background: linear-gradient(135deg, var(--cyan), var(--magenta)); flex: 0 0 auto;
+                      box-shadow: 0 0 8px rgba(255, 176, 46, .45); }
   .panel h2 .sub { margin-left: auto; font: 400 10.5px var(--mono); letter-spacing: .04em;
                    color: var(--dim); text-transform: none; }
   .mt { margin-top: 14px; }
@@ -130,18 +135,18 @@
        text-transform: uppercase; padding: 2px 7px 5px; border-bottom: 1px solid var(--line); }
   th:first-child, td:first-child { text-align: left; }
   td { text-align: right; padding: 3.5px 7px; white-space: nowrap; font-size: 12.5px; }
-  tbody tr { border-bottom: 1px solid rgba(96, 118, 190, .06); }
+  tbody tr { border-bottom: 1px solid rgba(148, 158, 168, .07); }
   tr.sym { cursor: pointer; transition: background .15s; }
-  tr.sym:hover { background: rgba(53, 224, 255, .05); }
-  tr.hot { background: linear-gradient(90deg, rgba(200, 107, 255, .1), rgba(200, 107, 255, .02));
+  tr.sym:hover { background: rgba(255, 176, 46, .05); }
+  tr.hot { background: linear-gradient(90deg, rgba(255, 107, 43, .1), rgba(255, 107, 43, .02));
            box-shadow: inset 3px 0 0 var(--magenta); }
-  tr.pos td:first-child b { color: var(--magenta); text-shadow: 0 0 10px rgba(200, 107, 255, .55); }
+  tr.pos td:first-child b { color: var(--magenta); text-shadow: 0 0 10px rgba(255, 107, 43, .5); }
   td.symname b { font-weight: 700; color: var(--white); }
   .spark { width: 72px; height: 20px; vertical-align: middle; }
   .chip { display: inline-block; min-width: 30px; text-align: center; padding: 0 6px; border-radius: 4px;
-          font-size: 10.5px; font-weight: 700; border: 1px solid rgba(120, 150, 235, .25);
-          color: #9fb4e8; background: rgba(120, 150, 235, .07); }
-  .chip.hi { color: #ffb4be; border-color: rgba(255, 77, 103, .45); background: rgba(255, 77, 103, .1); }
+          font-size: 10.5px; font-weight: 700; border: 1px solid rgba(170, 180, 190, .25);
+          color: #aab6c2; background: rgba(170, 180, 190, .07); }
+  .chip.hi { color: #ff8d80; border-color: rgba(242, 63, 79, .45); background: rgba(242, 63, 79, .1); }
 
   .dim { color: var(--dim); } .green { color: var(--green); } .red { color: var(--red); }
   .gold { color: var(--gold); } .cyan { color: var(--cyan); } .white { color: var(--white); }
@@ -153,9 +158,9 @@
   @keyframes pulse { 50% { opacity: .35; } }
 
   canvas.big { width: 100%; height: 340px; display: block; background: var(--inset);
-               border: 1px solid rgba(96, 118, 190, .1); border-radius: 9px; cursor: crosshair; }
+               border: 1px solid rgba(148, 158, 168, .1); border-radius: 9px; cursor: crosshair; }
   #equity { width: 100%; height: 96px; display: block; background: var(--inset);
-            border: 1px solid rgba(96, 118, 190, .1); border-radius: 9px; }
+            border: 1px solid rgba(148, 158, 168, .1); border-radius: 9px; }
 
   .kv { display: grid; grid-template-columns: auto auto; gap: 2px 12px; font-size: 12.5px; }
   .kv div:nth-child(even) { text-align: right; }
@@ -172,24 +177,25 @@
   .rail .tick.done { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .rail .cur { position: absolute; top: 2px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%;
                background: var(--white); box-shadow: 0 0 10px var(--cyan), 0 0 4px #fff; }
+  /* fib chart keeps the TV palette (white entry, gold zone, green TPs) — strategy colors, not theme */
 
   .events { max-height: 190px; overflow-y: auto; font-size: 11.5px; }
   .events div { padding: 2px 0 2px 10px; color: var(--dim); border-left: 2px solid var(--dimmer); margin: 2px 0; }
   .events div:first-child { color: var(--text); border-left-color: var(--cyan); }
 
   .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; }
-  .p-entry { color: var(--cyan); background: rgba(53, 224, 255, .1); border: 1px solid rgba(53, 224, 255, .35); }
-  .p-tp { color: var(--green); background: rgba(46, 222, 138, .1); border: 1px solid rgba(46, 222, 138, .35); }
-  .p-stop { color: var(--red); background: rgba(255, 77, 103, .12); border: 1px solid rgba(255, 77, 103, .4); }
-  .p-liq { color: var(--magenta); background: rgba(200, 107, 255, .12); border: 1px solid rgba(200, 107, 255, .4); }
+  .p-entry { color: var(--cyan); background: rgba(255, 176, 46, .1); border: 1px solid rgba(255, 176, 46, .35); }
+  .p-tp { color: var(--green); background: rgba(53, 201, 95, .1); border: 1px solid rgba(53, 201, 95, .35); }
+  .p-stop { color: var(--red); background: rgba(242, 63, 79, .12); border: 1px solid rgba(242, 63, 79, .4); }
+  .p-liq { color: var(--magenta); background: rgba(255, 107, 43, .12); border: 1px solid rgba(255, 107, 43, .4); }
   .p-be { color: var(--gold); background: rgba(240, 196, 82, .1); border: 1px solid rgba(240, 196, 82, .35); }
 
   #conn { display: none; margin-bottom: 12px; padding: 10px 16px; border-radius: 10px;
-          background: rgba(255, 77, 103, .1); color: #ff97a6; border: 1px solid rgba(255, 77, 103, .45); }
+          background: rgba(242, 63, 79, .1); color: #ff8d80; border: 1px solid rgba(242, 63, 79, .45); }
 
   .scroll { max-height: 230px; overflow-y: auto; }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
-  ::-webkit-scrollbar-thumb { background: #232b4a; border-radius: 6px; }
+  ::-webkit-scrollbar-thumb { background: #2a2f34; border-radius: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
 
   @media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, 1fr); } }
@@ -202,11 +208,12 @@
   <svg class="logo" viewBox="0 0 100 100"><path d="M96 60 A38 38 0 0 0 20 60 A26 26 0 0 0 72 60 A17 17 0 0 0 38 60 A10.5 10.5 0 0 0 59 60 A6 6 0 0 0 47 60"
     fill="none" stroke="url(#lg)" stroke-width="5" stroke-linecap="round"/>
     <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#f0c452"/><stop offset="1" stop-color="#35e0ff"/></linearGradient></defs></svg>
+      <stop offset="0" stop-color="#ffb02e"/><stop offset="1" stop-color="#ff6b2b"/></linearGradient></defs></svg>
   <h1>Picasso <small>FIB TERMINAL</small></h1>
   <span class="badge b-venue">KRAKEN · 1H</span>
   <span class="badge b-paper" id="mode">PAPER</span>
   <span class="badge b-lev" id="lev">LEV SIM</span>
+  <span class="badge b-ws" id="wsb" style="display:none">⚡ WS</span>
   <span class="meta" id="meta"></span>
   <div class="countdown"><b id="countdown">--:--</b><span>NEXT SCAN</span></div>
   <div id="scanbar"></div>
@@ -261,8 +268,9 @@ let lastChart = null;           // last chart payload, for crosshair redraws
 let hoverX = null;
 
 const $ = id => document.getElementById(id);
-const C = {cyan: "#35e0ff", gold: "#f0c452", green: "#2ede8a", bgreen: "#7dffb8",
-           red: "#ff4d67", magenta: "#c86bff", white: "#f5f7ff", dim: "#5f6a8f"};
+// cyan = amber accent, magenta = ember (names kept from the old wiring)
+const C = {cyan: "#ffb02e", gold: "#f0c452", green: "#35c95f", bgreen: "#7dff9e",
+           red: "#f23f4f", magenta: "#ff6b2b", white: "#f5f7f4", dim: "#78828c"};
 
 const fmt = v => v == null || !isFinite(v) ? "—"
   : v >= 1000 ? "$" + v.toLocaleString(undefined, {maximumFractionDigits: 2})
@@ -351,7 +359,7 @@ function drawChart(d, sym) {
   ctx.font = "9.5px JetBrains Mono, monospace";
   for (let g = 0; g <= 4; g++) {
     const v = lo + (hi - lo) * g / 4, y = Y(v);
-    ctx.strokeStyle = "rgba(96,118,190,0.10)"; ctx.beginPath();
+    ctx.strokeStyle = "rgba(148,158,168,0.09)"; ctx.beginPath();
     ctx.moveTo(PADL, y); ctx.lineTo(W - PADR + 4, y); ctx.stroke();
     ctx.fillStyle = C.dim; ctx.fillText(ptxt(v), W - PADR + 8, y + 3);
   }
@@ -397,7 +405,7 @@ function drawChart(d, sym) {
     const vmax = Math.max(...candles.map(k => k[5])) || 1;
     candles.forEach((k, i) => {
       const up = k[4] >= k[1];
-      ctx.fillStyle = up ? "rgba(46,222,138,0.28)" : "rgba(255,77,103,0.28)";
+      ctx.fillStyle = up ? "rgba(53,201,95,0.30)" : "rgba(242,63,79,0.30)";
       const vh = k[5] / vmax * (VOLH - 6);
       ctx.fillRect(X(i) - Math.max(1, cw / n * 0.32), H - 22 - vh, Math.max(2, cw / n * 0.64), vh);
     });
@@ -408,7 +416,7 @@ function drawChart(d, sym) {
       ctx.strokeStyle = col; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x, Y(h)); ctx.lineTo(x, Y(l)); ctx.stroke();
       const yo = Y(o), yc = Y(cl);
-      ctx.fillStyle = up ? "rgba(46,222,138,0.85)" : "rgba(255,77,103,0.85)";
+      ctx.fillStyle = up ? "rgba(53,201,95,0.85)" : "rgba(242,63,79,0.85)";
       ctx.fillRect(x - bw / 2, Math.min(yo, yc), bw, Math.max(1, Math.abs(yc - yo)));
     });
   } else {
@@ -431,7 +439,7 @@ function drawChart(d, sym) {
   if (hoverX != null && candles.length) {
     const i = Math.max(0, Math.min(n - 1, Math.floor((hoverX - PADL) / cw * n)));
     const k = candles[i], x = X(i);
-    ctx.strokeStyle = "rgba(200,215,255,0.28)"; ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = "rgba(200,210,220,0.28)"; ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(x, PADT); ctx.lineTo(x, H - 22); ctx.stroke(); ctx.setLineDash([]);
     const t = new Date(k[0]);
     const txt = `${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")} `
@@ -440,7 +448,7 @@ function drawChart(d, sym) {
     const tw = ctx.measureText(txt).width + 14;
     const bx = Math.min(Math.max(6, x - tw / 2), W - PADR - tw);
     ctx.fillStyle = "rgba(6,9,18,0.94)"; ctx.fillRect(bx, PADT + 2, tw, 18);
-    ctx.strokeStyle = "rgba(120,150,235,0.4)"; ctx.strokeRect(bx, PADT + 2, tw, 18);
+    ctx.strokeStyle = "rgba(170,180,190,0.4)"; ctx.strokeRect(bx, PADT + 2, tw, 18);
     ctx.fillStyle = k[4] >= k[1] ? C.green : C.red;
     ctx.fillText(txt, bx + 7, PADT + 15);
   }
@@ -461,6 +469,7 @@ function render(s) {
     (s.balance != null ? `risk ${s.risk_pct}% of balance/trade` : `$${s.risk_usd} risk/trade`);
   $("mode").textContent = s.paper ? "PAPER" : "LIVE";
   $("mode").className = "badge " + (s.paper ? "b-paper" : "b-live");
+  if (s.ws) $("wsb").style.display = s.ws.connected ? "" : "none";
   const mm = String(Math.floor(s.countdown / 60)).padStart(2, "0"), ss2 = String(s.countdown % 60).padStart(2, "0");
   $("countdown").textContent = `${mm}:${ss2}`;
   $("scanbar").style.width = (100 - s.countdown / (s.scan_interval || 300) * 100).toFixed(1) + "%";
@@ -589,7 +598,7 @@ function render(s) {
   const epad = (ehi - elo) * 0.12 || 1; elo -= epad; ehi += epad;
   const EX = t => 4 + (t - pts[0].t) / Math.max(1, s.now - pts[0].t) * (EW - 8);
   const EY = v => EH - 8 - (v - elo) / (ehi - elo) * (EH - 16);
-  ectx.strokeStyle = "rgba(96,118,190,0.3)"; ectx.setLineDash([3, 4]);
+  ectx.strokeStyle = "rgba(148,158,168,0.3)"; ectx.setLineDash([3, 4]);
   ectx.beginPath(); ectx.moveTo(0, EY(0)); ectx.lineTo(EW, EY(0)); ectx.stroke(); ectx.setLineDash([]);
   const col = s.session_pl >= 0 ? C.green : C.red;
   ectx.beginPath();
@@ -602,7 +611,7 @@ function render(s) {
   ectx.shadowColor = col; ectx.shadowBlur = 8; ectx.stroke(); ectx.shadowBlur = 0;
   ectx.lineTo(EX(pts[pts.length - 1].t), EY(0)); ectx.lineTo(EX(pts[0].t), EY(0)); ectx.closePath();
   const grad = ectx.createLinearGradient(0, 0, 0, EH);
-  grad.addColorStop(0, s.session_pl >= 0 ? "rgba(46,222,138,0.22)" : "rgba(255,77,103,0.22)");
+  grad.addColorStop(0, s.session_pl >= 0 ? "rgba(53,201,95,0.22)" : "rgba(242,63,79,0.22)");
   grad.addColorStop(1, "rgba(0,0,0,0)");
   ectx.fillStyle = grad; ectx.fill();
   $("eqlabel").textContent = usd(s.session_pl);

@@ -42,6 +42,10 @@ from statistics import mean
 from collections import deque
 
 import ccxt
+try:
+    import websocket  # websocket-client: live Kraken ticker stream (optional)
+except ImportError:
+    websocket = None
 import pandas as pd
 import numpy as np
 from rich.console import Console
@@ -566,7 +570,7 @@ def build_symbols_table(state, hot):
         base = sym.split("/")[0]
         p, f, m = d.get("price"), d.get("fib"), d.get("metrics") or {}
         pos = d.get("position")
-        mark = "[bold magenta]▶[/]" if sym == hot else ""
+        mark = "[bold dark_orange]▶[/]" if sym == hot else ""
         flat = bool(f and p and f["range"] < p * (MIN_RANGE_PCT / 100.0))
         dist = "[dim]flat[/]" if flat else (f"{(p - f['entry']) / p * 100:+.1f}%" if (p and f) else "—")
         touches = str(m.get("touches", "—"))
@@ -576,7 +580,7 @@ def build_symbols_table(state, hot):
         if pos:
             upnl = (p - pos["entry"]) * pos.get("remaining", pos["size"]) + pos.get("realized", 0.0) if p else 0.0
             pl = f"[{'bold green' if upnl >= 0 else 'bold red'}]{upnl:+,.0f}[/]"
-            name = f"[bold magenta]{base}[/]"
+            name = f"[bold dark_orange]{base}[/]"
         else:
             pl = "[dim]—[/]"
             name = f"[bold]{base}[/]" if m.get("bullish") else f"[dim]{base}[/]"
@@ -609,7 +613,7 @@ def build_fib_table(sym, fib, price):
     if price:
         nearest = min(range(len(rows)), key=lambda i: abs(rows[i][1] - price))
     for i, (name, val, role, style) in enumerate(rows):
-        marker = "[bold magenta]◀[/]" if i == nearest else ""
+        marker = "[bold dark_orange]◀[/]" if i == nearest else ""
         table.add_row(f"[{style}]{name}[/]", fmt_price(val), marker, role)
     return table
 
@@ -651,7 +655,7 @@ def build_chart(sym, ss):
                 chars.append(ch)
                 continue
             if j == len(heights) - 1:
-                ch = f"[bold magenta]{ch}[/]"
+                ch = f"[bold dark_orange]{ch}[/]"
             else:
                 ch = f"[cyan]{ch}[/]"
             chars.append(ch)
@@ -721,7 +725,7 @@ def build_status(sym, ss):
             for i in (1, 2, 3, 4)
         )
         grid.add_row("Targets", tps)
-        title, style = f"📊 {sym} — POSITION OPEN", "magenta"
+        title, style = f"📊 {sym} — POSITION OPEN", "dark_orange"
     else:
         title, style = f"📊 {sym} — waiting for setup", "cyan"
 
@@ -1380,6 +1384,7 @@ def state_snapshot(state):
         "ready": True, "app": APP, "paper": PAPER_MODE, "timeframe": TIMEFRAME,
         "risk_usd": RISK_AMOUNT_USD, "countdown": state.get("countdown", 0),
         "balance": get_balance(), "risk_pct": RISK_PCT,
+        "ws": {"connected": ws_fresh(), "ticks": WS_FEED["ticks"]},
         "scan_interval": SCAN_INTERVAL, "scans": state.get("scans", 0),
         "started": state.get("started"), "session_pl": state.get("session_pl", 0.0),
         "session_entries": state.get("session_entries", 0),
@@ -1424,6 +1429,82 @@ class _WebHandler(BaseHTTPRequestHandler):
                 self.send_error(500)
             except Exception:
                 pass
+
+# ========== KRAKEN WEBSOCKET FEED ==========
+
+WS_URL = "wss://ws.kraken.com/v2"
+# Status is explicit and logged — a dead feed must never look healthy
+# (unmeasured signals default to healthy is the fleet's oldest scar).
+WS_FEED = {"connected": False, "ticks": 0, "last_msg": 0.0, "rejected": []}
+
+def ws_fresh(max_age=30.0):
+    """True while the websocket has delivered a tick in the last max_age seconds."""
+    return WS_FEED["connected"] and (time.time() - WS_FEED["last_msg"]) < max_age
+
+def start_ws_feed(state):
+    """Stream live tickers for all SYMBOLS over Kraken's public websocket.
+
+    Prices land in state as they trade instead of on the 15s REST batch.
+    Runs in a daemon thread with auto-reconnect; on any failure the REST
+    batch in the countdown loop takes back over (it only rests while the
+    feed is fresh). Requires websocket-client; without it we just log and
+    stay on REST.
+    """
+    if websocket is None:
+        log_event("[yellow]⚠ websocket-client not installed — prices on 15s REST batch[/yellow]")
+        return
+
+    def on_open(ws):
+        WS_FEED["connected"] = True
+        WS_FEED["last_msg"] = time.time()
+        ws.send(json.dumps({"method": "subscribe",
+                            "params": {"channel": "ticker", "symbol": list(SYMBOLS)}}))
+        log_event(f"[cyan]⚡ WS feed connected — streaming {len(SYMBOLS)} tickers[/cyan]")
+
+    def on_message(ws, raw):
+        try:
+            msg = json.loads(raw)
+        except ValueError:
+            return
+        WS_FEED["last_msg"] = time.time()
+        if msg.get("channel") == "ticker":
+            for tk in msg.get("data") or []:
+                sym = tk.get("symbol")
+                last = safe_float(tk.get("last"))
+                if sym in state["syms"] and last > 0:
+                    state["syms"][sym]["price"] = last
+                    state["syms"][sym]["price_live"] = True
+                    WS_FEED["ticks"] += 1
+        elif msg.get("method") == "subscribe" and msg.get("success") is False:
+            bad = (msg.get("result") or {}).get("symbol", "?")
+            if bad not in WS_FEED["rejected"]:
+                WS_FEED["rejected"].append(bad)
+                log_event(f"[yellow]⚠ WS rejected symbol {bad} — that pair stays on REST[/yellow]")
+
+    def on_close(ws, *a):
+        if WS_FEED["connected"]:
+            log_event("[yellow]⚡ WS feed dropped — REST fallback active, reconnecting…[/yellow]")
+        WS_FEED["connected"] = False
+
+    def on_error(ws, err):
+        WS_FEED["connected"] = False
+
+    def run():
+        backoff = 5
+        while True:
+            try:
+                app = websocket.WebSocketApp(WS_URL, on_open=on_open, on_message=on_message,
+                                             on_close=on_close, on_error=on_error)
+                app.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception:
+                pass
+            WS_FEED["connected"] = False
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            if ws_fresh():  # reconnected cleanly inside run_forever
+                backoff = 5
+
+    threading.Thread(target=run, daemon=True, name="ws-feed").start()
 
 def start_web(state):
     """Serve the dashboard on localhost only. Port busy -> log and carry on."""
@@ -1505,7 +1586,7 @@ def scan_symbol(ex, sym, state):
                     save_positions(state)
                     if i == 4 or position["remaining"] <= 1e-12:
                         total = position["realized"]
-                        log_event(f"[bold magenta]🎨 {sym} COMPLETE — trade banked ${total:,.2f}[/bold magenta]")
+                        log_event(f"[bold dark_orange]🎨 {sym} COMPLETE — trade banked ${total:,.2f}[/bold dark_orange]")
                         state["stats"] = update_stats(total)
                         update_balance(total)
                         state["closed"].append({"when": now_str()[5:16], "sym": base, "exit": "TP4", "pnl": total})
@@ -1592,7 +1673,7 @@ def main():
         p.setdefault("realized", 0.0)
         p.setdefault("leverage", 1.0)
         p.setdefault("liq", 0.0)
-        log_event(f"[magenta]Resumed {sym} position (entry {fmt_price(p['entry'])})[/magenta]")
+        log_event(f"[dark_orange]Resumed {sym} position (entry {fmt_price(p['entry'])})[/dark_orange]")
 
     state = {"syms": {sym: {"fib": None, "price": None, "price_live": False, "metrics": None,
                             "closes": None, "candles": None, "position": positions.get(sym)}
@@ -1606,6 +1687,7 @@ def main():
         log_event("[bold red]⚠ Leverage SIMULATION per Kraken margin caps — paper only; live is 1x[/bold red]")
     log_event(f"[cyan]PICASSO online — scanning {len(SYMBOLS)} Kraken pairs on {TIMEFRAME}[/cyan]")
     start_web(state)
+    start_ws_feed(state)
 
     try:
         with Live(build_screen(state), console=console, screen=True, refresh_per_second=4) as live:
@@ -1626,7 +1708,8 @@ def main():
                 # ---- COUNTDOWN: repaint every second, batch tickers every 15s ----
                 for remaining in range(SCAN_INTERVAL, 0, -1):
                     state["countdown"] = remaining
-                    if remaining % 15 == 0:
+                    # REST ticker batch only when the websocket isn't delivering
+                    if remaining % 15 == 0 and not ws_fresh():
                         try:
                             ticks = ex.fetch_tickers(list(SYMBOLS)) or {}
                             for sym, tk in ticks.items():
