@@ -17,3 +17,5 @@ license.json
 *.log
 picasso.err
 picasso.log
+balance.json
+positions_pre_balance_reset.json

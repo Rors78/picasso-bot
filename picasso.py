@@ -61,6 +61,7 @@ KEYS_FILE = BASE / ".picasso_keys.json"
 POS_FILE = BASE / "positions.json"
 TRADES_CSV = BASE / "trades.csv"
 STATS_FILE = BASE / "stats.json"
+BALANCE_FILE = BASE / "balance.json"
 LICENSE_FILE = BASE / "license.json"  # For lease model
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -100,8 +101,16 @@ TREND_SMA = int(os.environ.get("PICASSO_TREND_SMA", "200"))          # Bullish-o
 SOUND_ON = (os.environ.get("PICASSO_SOUND", "1") == "1")             # Audible alerts on trade events
 
 # Risk Management
-RISK_AMOUNT_USD = float(os.environ.get("PICASSO_RISK_USD", "1000"))  # $1000 per trade (user's proven amount)
+RISK_AMOUNT_USD = float(os.environ.get("PICASSO_RISK_USD", "1000"))  # nominal sizing for raw backtest tables
 PAPER_MODE = (os.environ.get("PICASSO_PAPER", "1") == "1")  # Default paper mode
+
+# Account balance (paper bankroll) — operator reset to $80.56 on 2026-08-27.
+# balance.json is the authority once it exists; PICASSO_BALANCE only seeds it.
+# Sizing risks RISK_PCT% of the CURRENT balance per trade, then caps the posted
+# margin at whatever balance is still free — you can never post margin you
+# don't have. Realized P/L compounds the balance when a trade closes.
+STARTING_BALANCE = float(os.environ.get("PICASSO_BALANCE", "80.56"))
+RISK_PCT = float(os.environ.get("PICASSO_RISK_PCT", "20"))  # % of balance risked per trade (pre margin cap)
 
 # Leverage - PAPER/BACKTEST SIMULATION ONLY.
 # Binance US is spot-only: no venue this bot may use can execute leverage,
@@ -466,6 +475,30 @@ def update_stats(realized):
     save_json(STATS_FILE, stats)
     return stats
 
+def get_balance():
+    """Current paper bankroll. balance.json is the authority; seeded from env."""
+    return float(load_json(BALANCE_FILE, {"balance": STARTING_BALANCE}).get("balance", STARTING_BALANCE))
+
+def update_balance(delta):
+    """Compound realized P/L into the bankroll. Called only at live trade close."""
+    bal = get_balance() + delta
+    save_json(BALANCE_FILE, {"balance": bal, "updated": now_str()})
+    return bal
+
+def balance_sized(entry, stop, lev, balance, avail_margin):
+    """Size a trade from the bankroll: risk RISK_PCT% of balance, then cap the
+    posted margin at what's actually free. Returns (size, margin) — (0, 0) if
+    there's no meaningful margin left to post."""
+    if avail_margin < 0.50 or entry <= stop:
+        return 0.0, 0.0
+    risk = balance * RISK_PCT / 100.0
+    size = calculate_position_size(entry, stop, risk) * lev
+    margin = entry * size / lev
+    if margin > avail_margin:
+        margin = avail_margin
+        size = avail_margin * lev / entry
+    return size, margin
+
 # ========== DISPLAY (full-screen Rich TUI) ==========
 
 EVENTS = deque(maxlen=100)
@@ -498,7 +531,7 @@ def build_header():
     return Panel(
         Align.center(
             f"[bold cyan]🎨 {APP}[/]   [white]KRAKEN · {len(SYMBOLS)} pairs · {TIMEFRAME} · "
-            f"${RISK_AMOUNT_USD:.0f} risk/trade[/]   {mode}{lev}"
+            f"bal [bold gold1]${get_balance():,.2f}[/] · risk {RISK_PCT:.0f}%/trade[/]   {mode}{lev}"
         ),
         border_style="cyan", box=box.HEAVY,
     )
@@ -920,6 +953,8 @@ def simulate(df):
             "entry_ts": float(df.iloc[position["entry_i"]]["timestamp"]),
             "exit_ts": float(df.iloc[i]["timestamp"]),
             "margin": position["entry"] * position["size"] / position["leverage"],
+            "size": position["size"], "stop0": position["stop0"],
+            "lev": position["leverage"],
         })
         equity += total
         peak = max(peak, equity)
@@ -960,7 +995,7 @@ def simulate(df):
                 entry, stop = fib["entry"], fib["stop_loss"]
                 size = calculate_position_size(entry, stop, RISK_AMOUNT_USD) * LEVERAGE
                 position = {
-                    "entry": entry, "stop_loss": stop, "size": size,
+                    "entry": entry, "stop_loss": stop, "stop0": stop, "size": size,
                     "remaining": size, "realized": 0.0, "leverage": LEVERAGE,
                     "liq": entry * (1 - 1 / LEVERAGE) if LEVERAGE > 1 else 0.0,
                     "tp1": fib["tp1"], "tp2": fib["tp2"], "tp3": fib["tp3"], "tp4": fib["tp4"],
@@ -971,6 +1006,70 @@ def simulate(df):
     if position:
         close_out("EOD", float(df.iloc[-1]["close"]), len(df) - 1)
     return trades, max_dd
+
+def replay_balance(trades_in, starting=None):
+    """Replay simulated trades against ONE shared compounding bankroll.
+
+    Valid because entries/exits in simulate() are size-independent: prices and
+    timing never change with position size, only P/L scales (linearly, since
+    the exit schedule is fixed 25% fractions). At each entry, size = RISK_PCT%
+    of the current balance, margin-capped by what's free after margin already
+    posted on still-open trades. Trades that can't post $0.50 margin are
+    skipped. Realized P/L lands on the balance at exit time.
+    """
+    starting = STARTING_BALANCE if starting is None else starting
+    trades = sorted(trades_in, key=lambda t: t["entry_ts"])
+    open_tr = []                      # [exit_ts, scaled_pnl, margin]
+    bal, posted = starting, 0.0
+    taken = skipped = 0
+    peak, max_dd = starting, 0.0
+    curve = [starting]
+
+    def settle(upto):
+        nonlocal bal, posted, peak, max_dd
+        for o in sorted([o for o in open_tr if o[0] <= upto]):
+            bal += o[1]
+            posted -= o[2]
+            open_tr.remove(o)
+            peak = max(peak, bal)
+            max_dd = max(max_dd, peak - bal)
+            curve.append(bal)
+
+    for tr in trades:
+        settle(tr["entry_ts"])
+        avail = max(0.0, bal - posted)
+        size, margin = balance_sized(tr["entry"], tr["stop0"], tr["lev"], bal, avail)
+        if size <= 0 or tr["size"] <= 0:
+            skipped += 1
+            continue
+        scale = size / tr["size"]
+        open_tr.append([tr["exit_ts"], tr["pnl"] * scale, margin])
+        posted += margin
+        taken += 1
+    settle(float("inf"))
+    return {"start": starting, "final": bal, "taken": taken, "skipped": skipped,
+            "peak": peak, "max_dd": max_dd, "curve": curve,
+            "ret_pct": (bal - starting) / starting * 100 if starting else 0.0,
+            "busted": bal < 1.0}
+
+def print_balance_verdict(rp, label):
+    """Render one bankroll replay as a panel."""
+    f_style = "bold green" if rp["final"] >= rp["start"] else "bold red"
+    blocks = "▁▂▃▄▅▆▇█"
+    cv = rp["curve"]
+    lo_c, hi_c = min(cv), max(cv)
+    span = (hi_c - lo_c) or 1.0
+    spark = "".join(blocks[min(7, int((v - lo_c) / span * 7.999))] for v in cv[-60:])
+    bust = "\n[bold white on red] 💀 ACCOUNT BUSTED [/bold white on red]" if rp["busted"] else ""
+    console.print(Panel.fit(
+        f"[bold]${rp['start']:,.2f} → [{f_style}]${rp['final']:,.2f}[/] "
+        f"([{f_style}]{rp['ret_pct']:+,.1f}%[/])[/bold]   "
+        f"peak ${rp['peak']:,.2f} · max DD ${rp['max_dd']:,.2f}\n"
+        f"[bold]Trades:[/] {rp['taken']} taken · {rp['skipped']} skipped (no free margin)\n"
+        f"[bold]Balance:[/] [cyan]{spark}[/]\n"
+        f"[dim]Risk {RISK_PCT:.0f}% of current balance per trade, margin capped at what's "
+        f"free — sizes compound with the account, signals unchanged.[/dim]{bust}",
+        title=f"💰 {label}", border_style="gold1"))
 
 def run_backtest(days=60):
     """Replay the exact live entry/exit logic over historical candles."""
@@ -1024,10 +1123,14 @@ def run_backtest(days=60):
         f"[bold]TP reach:[/] TP1 {tp_rate(1):.0f}% · TP2 {tp_rate(2):.0f}% · "
         f"TP3 {tp_rate(3):.0f}% · TP4 {tp_rate(4):.0f}%\n"
         f"[dim]Scaled exits 25%/TP, breakeven stop after TP1; exits via bar high/low "
-        f"(liq, then stop, then TPs). Risk ${RISK_AMOUNT_USD:.0f}/trade at {LEVERAGE:.0f}x, "
+        f"(liq, then stop, then TPs). Nominal ${RISK_AMOUNT_USD:.0f} risk/trade at {LEVERAGE:.0f}x, "
         f"gross P/L, no fees.[/dim]",
         title="📜 Backtest Summary", border_style="cyan",
     ))
+
+    # The honest small-account view: same signals replayed on the real bankroll
+    print_balance_verdict(replay_balance(trades),
+                          f"${STARTING_BALANCE:,.2f} account · {SYMBOL} · {days}d")
 
 def run_backtest_all(days=60):
     """Backtest the whole SYMBOLS roster, each pair at its own max leverage."""
@@ -1112,6 +1215,11 @@ def run_backtest_all(days=60):
             f"[dim]Each pair simulated independently at its own leverage; overlap shows how "
             f"much capital that would actually take. Scaled exits, gross P/L, no fees.[/dim]",
             title="🚁 Fleet Verdict", border_style="cyan"))
+
+        # Shared-bankroll replay: all pairs compete chronologically for the
+        # same $80.56 of margin — the number the operator actually has
+        print_balance_verdict(replay_balance(all_trades),
+                              f"${STARTING_BALANCE:,.2f} account · all pairs · {days}d")
 
 # ========== TUNER ==========
 
@@ -1264,12 +1372,14 @@ def state_snapshot(state):
             "price": d.get("price"), "live": bool(d.get("price_live")),
             "fib": d.get("fib"), "metrics": d.get("metrics"),
             "closes": (d.get("closes") or [])[-96:],
+            "candles": (d.get("candles") or [])[-96:],
             "leverage": sym_leverage(sym),
             "position": d.get("position"),
         }
     return {
         "ready": True, "app": APP, "paper": PAPER_MODE, "timeframe": TIMEFRAME,
         "risk_usd": RISK_AMOUNT_USD, "countdown": state.get("countdown", 0),
+        "balance": get_balance(), "risk_pct": RISK_PCT,
         "scan_interval": SCAN_INTERVAL, "scans": state.get("scans", 0),
         "started": state.get("started"), "session_pl": state.get("session_pl", 0.0),
         "session_entries": state.get("session_entries", 0),
@@ -1347,6 +1457,9 @@ def scan_symbol(ex, sym, state):
     ss["price_live"] = False
     ss["metrics"] = market_metrics(df, fib_levels)
     ss["closes"] = [float(c) for c in df["close"].tail(120)]
+    # OHLC for the web dashboard's candlestick chart: [ts_ms, open, high, low, close, volume]
+    ss["candles"] = [[int(r.timestamp), float(r.open), float(r.high), float(r.low),
+                      float(r.close), float(r.volume)] for r in df.tail(96).itertuples()]
 
     position = ss.get("position")
     if position:
@@ -1363,6 +1476,7 @@ def scan_symbol(ex, sym, state):
             state["session_pl"] += realized
             record_trade(sym, "LIQUIDATED", liq, position["remaining"], realized)
             state["stats"] = update_stats(total)
+            update_balance(total)
             state["closed"].append({"when": now_str()[5:16], "sym": base, "exit": "LIQ", "pnl": total})
             log_event(f"[bold white on red]💀 {sym} LIQUIDATED at {fmt_price(liq)} — margin wiped: ${realized:,.2f}[/bold white on red]")
             play_alert("liq")
@@ -1393,6 +1507,7 @@ def scan_symbol(ex, sym, state):
                         total = position["realized"]
                         log_event(f"[bold magenta]🎨 {sym} COMPLETE — trade banked ${total:,.2f}[/bold magenta]")
                         state["stats"] = update_stats(total)
+                        update_balance(total)
                         state["closed"].append({"when": now_str()[5:16], "sym": base, "exit": "TP4", "pnl": total})
                         position = ss["position"] = None
                         save_positions(state)
@@ -1406,6 +1521,7 @@ def scan_symbol(ex, sym, state):
             state["session_pl"] += realized
             record_trade(sym, "STOP", stop_price, position["remaining"], realized)
             state["stats"] = update_stats(total)
+            update_balance(total)
             label = "BREAKEVEN STOP" if stop_price >= entry else "STOP LOSS"
             log_event(f"[bold red]🛑 {sym} {label} at {fmt_price(stop_price)} — trade total ${total:,.2f}[/bold red]")
             state["closed"].append({"when": now_str()[5:16], "sym": base,
@@ -1421,7 +1537,15 @@ def scan_symbol(ex, sym, state):
             lev = sym_leverage(sym)
             entry_price = fib_levels["entry"]
             stop_loss = fib_levels["stop_loss"]
-            position_size = calculate_position_size(entry_price, stop_loss, RISK_AMOUNT_USD) * lev
+            # Size from the bankroll: risk RISK_PCT% of balance, margin capped
+            # by what's not already posted on other open positions
+            balance = get_balance()
+            avail = max(0.0, balance - portfolio_risk(state)["margin"])
+            position_size, margin = balance_sized(entry_price, stop_loss, lev, balance, avail)
+            if position_size <= 0:
+                log_event(f"[yellow]⚠ {sym} setup fired but no free margin "
+                          f"(balance ${balance:,.2f}, ${avail:,.2f} free) — skipped[/yellow]")
+                return
 
             ss["position"] = {
                 "entry": entry_price,
@@ -1471,7 +1595,7 @@ def main():
         log_event(f"[magenta]Resumed {sym} position (entry {fmt_price(p['entry'])})[/magenta]")
 
     state = {"syms": {sym: {"fib": None, "price": None, "price_live": False, "metrics": None,
-                            "closes": None, "position": positions.get(sym)}
+                            "closes": None, "candles": None, "position": positions.get(sym)}
                       for sym in SYMBOLS},
              "countdown": SCAN_INTERVAL,
              "started": time.time(), "scans": 0, "session_entries": 0, "session_pl": 0.0,
