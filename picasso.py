@@ -1508,6 +1508,10 @@ def start_ws_feed(state):
                     state["syms"][sym]["price"] = last
                     state["syms"][sym]["price_live"] = True
                     WS_FEED["ticks"] += 1
+                    # Real-time exit management: liq/stop/TPs react to the
+                    # tick, not to the next 5-min scan
+                    if state["syms"][sym].get("position"):
+                        manage_position(sym, last, state)
         elif msg.get("method") == "subscribe" and msg.get("success") is False:
             bad = (msg.get("result") or {}).get("symbol", "?")
             if bad not in WS_FEED["rejected"]:
@@ -1554,36 +1558,30 @@ def start_web(state):
 def save_positions(state):
     save_json(POS_FILE, {s: d["position"] for s, d in state["syms"].items() if d.get("position")})
 
-def scan_symbol(ex, sym, state):
-    """Fetch candles for one symbol, run entry/exit logic, update its state."""
-    ss = state["syms"][sym]
-    base = sym.split("/")[0]
-    ohlcv = ex.fetch_ohlcv(sym, TIMEFRAME, limit=200)
-    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+# Exits are managed from TWO threads: the 5-min candle scan and every live
+# websocket tick. The lock makes each exit book exactly once.
+POS_LOCK = threading.Lock()
 
-    swing_low, swing_high = find_swing_high_low(df)
-    if swing_low is None or swing_high is None:
-        return
-    fib_levels = calculate_fibonacci_levels(swing_low, swing_high)
-    current_price = float(df.iloc[-1]["close"])
-    ss["fib"] = fib_levels
-    ss["price"] = current_price
-    ss["price_live"] = False
-    ss["metrics"] = market_metrics(df, fib_levels)
-    ss["closes"] = [float(c) for c in df["close"].tail(120)]
-    # OHLC for the web dashboard's candlestick chart: [ts_ms, open, high, low, close, volume]
-    ss["candles"] = [[int(r.timestamp), float(r.open), float(r.high), float(r.low),
-                      float(r.close), float(r.volume)] for r in df.tail(96).itertuples()]
+def manage_position(sym, price, state):
+    """Liq/TP/stop management for one symbol at the given price.
 
-    position = ss.get("position")
-    if position:
+    Runs on every websocket tick as well as on candle scans, so a leveraged
+    position reacts to its levels in real time instead of up to five minutes
+    late. Ordering per check: liq first (past liq the margin is gone before
+    any stop could save you), then TPs, then the stop.
+    """
+    with POS_LOCK:
+        ss = state["syms"][sym]
+        position = ss.get("position")
+        if not position or not price or price <= 0:
+            return
+        base = sym.split("/")[0]
         entry = position["entry"]
         lev = position.get("leverage", 1.0)
 
-        # Liquidation first (leveraged sims): past liq the margin is gone
-        # before any stop order could save you
+        # Liquidation first (leveraged sims)
         liq = position.get("liq", 0.0)
-        if lev > 1 and liq > 0 and current_price <= liq:
+        if lev > 1 and liq > 0 and price <= liq:
             margin = entry * position["remaining"] / lev
             realized = -margin
             total = position.get("realized", 0.0) + realized
@@ -1601,7 +1599,7 @@ def scan_symbol(ex, sym, state):
             # Scaled exits: 25% of the position at each TP
             for i in (1, 2, 3, 4):
                 tp = position[f"tp{i}"]
-                if current_price >= tp and not position.get(f"tp{i}_hit"):
+                if price >= tp and not position.get(f"tp{i}_hit"):
                     position[f"tp{i}_hit"] = True
                     slice_size = min(position["size"] * 0.25 if i < 4 else position["remaining"],
                                      position["remaining"])
@@ -1628,7 +1626,7 @@ def scan_symbol(ex, sym, state):
                         break
 
         # Stop check (may be at breakeven after TP1)
-        if position and current_price <= position["stop_loss"]:
+        if position and price <= position["stop_loss"]:
             stop_price = position["stop_loss"]
             realized = (stop_price - entry) * position["remaining"]
             total = position.get("realized", 0.0) + realized
@@ -1645,6 +1643,29 @@ def scan_symbol(ex, sym, state):
             ss["position"] = None
             save_positions(state)
 
+def scan_symbol(ex, sym, state):
+    """Fetch candles for one symbol, run entry/exit logic, update its state."""
+    ss = state["syms"][sym]
+    base = sym.split("/")[0]
+    ohlcv = ex.fetch_ohlcv(sym, TIMEFRAME, limit=200)
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+    swing_low, swing_high = find_swing_high_low(df)
+    if swing_low is None or swing_high is None:
+        return
+    fib_levels = calculate_fibonacci_levels(swing_low, swing_high)
+    current_price = float(df.iloc[-1]["close"])
+    ss["fib"] = fib_levels
+    ss["price"] = current_price
+    ss["price_live"] = False
+    ss["metrics"] = market_metrics(df, fib_levels)
+    ss["closes"] = [float(c) for c in df["close"].tail(120)]
+    # OHLC for the web dashboard's candlestick chart: [ts_ms, open, high, low, close, volume]
+    ss["candles"] = [[int(r.timestamp), float(r.open), float(r.high), float(r.low),
+                      float(r.close), float(r.volume)] for r in df.tail(96).itertuples()]
+
+    if ss.get("position"):
+        manage_position(sym, current_price, state)
     else:
         # No position - check for entry
         if check_pullback_entry(df, fib_levels):
