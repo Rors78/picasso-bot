@@ -118,9 +118,9 @@ RISK_PCT = float(os.environ.get("PICASSO_RISK_PCT", "20"))  # % of balance riske
 
 # Leverage. PAPER: simulated (size multiplied, liq at entry*(1-1/lev) wipes
 # the remaining margin, checked before the stop). LIVE: real Kraken margin -
-# orders carry the leverage param and each pair is clamped to the venue's own
-# max (VENUE_LEV, read from Kraken at startup). Operator direction 2026-08-27:
-# live margin at the roster caps ("get the sim shit out"); no 1x forcing.
+# every pair rides the venue's own max (VENUE_LEV, read from Kraken at
+# startup); the roster caps below apply to paper only. Operator direction
+# 2026-08-27: "bring those leverages up to the max on all"; no 1x forcing.
 LEVERAGE = max(1.0, float(os.environ.get("PICASSO_LEVERAGE", "1")))
 
 # Trading Pairs
@@ -128,8 +128,8 @@ LEVERAGE = max(1.0, float(os.environ.get("PICASSO_LEVERAGE", "1")))
 SYMBOL = os.environ.get("PICASSO_SYMBOL", "BTC/USD")
 TIMEFRAME = "1h"  # 1h charts only
 
-# Live roster: symbol -> max leverage for the paper sim (None = global LEVERAGE).
-# Leverage caps mirror Kraken's margin listing per pair; live mode is 1x always.
+# Roster: symbol -> max leverage for the PAPER sim only (None = global
+# LEVERAGE). Live mode ignores these caps and uses the venue max per pair.
 # All pairs verified listed on Kraken 2026-08-27.
 SYMBOLS = {
     "BTC/USD": None,
@@ -144,11 +144,19 @@ SYMBOLS = {
 # Empty in paper mode (roster caps apply as-is).
 VENUE_LEV = {}
 
+# Caps the order gateway accepts ABOVE the (lagging) AssetPairs leverage_buy
+# listing. Verified 2026-08-27: Kraken Pro UI badges BTC/USD 20x and a
+# validate-only order at leverage=20 is ACCEPTED while leverage_buy still tops
+# out at 10; 21x/25x/50x are rejected (EGeneral:Invalid arguments:leverage),
+# proving validate DOES check leverage. Each entry is re-probed against the
+# gateway at every live startup and dropped if the venue refuses it.
+VENUE_LEV_PROBES = {"BTC/USD": 20}
+
 def sym_leverage(sym):
+    if VENUE_LEV:  # LIVE: venue max on every pair, operator-directed 2026-08-27
+        return max(1.0, VENUE_LEV.get(sym, 1.0))
     lev = SYMBOLS.get(sym)
     want = LEVERAGE if lev is None else float(lev)
-    if VENUE_LEV:
-        want = min(want, VENUE_LEV.get(sym, 1.0))
     return max(1.0, want)
 
 # Flat markets (stablecoins, dead chop) have no pullback structure - skip
@@ -986,6 +994,23 @@ def prepare_live(ex):
         m = (ex.markets or {}).get(sym) or {}
         lb = (m.get("info") or {}).get("leverage_buy") or []
         VENUE_LEV[sym] = float(max([int(x) for x in lb], default=1))
+    # leverage_buy lags the venue's real caps (see VENUE_LEV_PROBES). Trust the
+    # order gateway over the listing: keep each override only if a validate-only
+    # order at that leverage is accepted right now.
+    for sym, lev in VENUE_LEV_PROBES.items():
+        if sym not in VENUE_LEV or lev <= VENUE_LEV[sym]:
+            continue
+        listed = VENUE_LEV[sym]
+        try:
+            amt = min_amount(sym) or 0.0001
+            ex.create_order(sym, "market", "buy", amt, None,
+                            {"leverage": int(lev), "validate": True})
+            VENUE_LEV[sym] = float(lev)
+            log_event(f"[bold red]⛓ {sym} venue cap {lev}x — gateway-verified "
+                      f"(AssetPairs listing lags at {listed:.0f}x)[/bold red]")
+        except Exception as e:
+            log_event(f"[yellow]⚠ {sym} {lev}x probe refused by gateway — keeping "
+                      f"{VENUE_LEV[sym]:.0f}x: {str(e)[:60]}[/yellow]")
     try:
         ex.create_order("BTC/USD", "market", "buy", 0.0001, None,
                         {"leverage": 5, "validate": True})

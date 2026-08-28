@@ -1,290 +1,86 @@
-# PICASSO 🎨 - The 98% Win Rate Bot
+# PICASSO 🎨 — Fibonacci Pullback Trader
 
-**Fibonacci Pullback Trading Bot - Proven $300/day Manual Trading, Now Automated**
+**Live Kraken spot-margin bot. Buys fib pullbacks in bullish trends across 17 USD pairs, scaled exits at fib extensions, real leverage at the venue maximum.**
 
-## 🚀 Performance (Proven Manual Trading)
+> 🔴 **LIVE since 2026-08-27.** This bot places real Kraken margin orders with real money when `PICASSO_PAPER=0`. It is the operator's personal bot — not part of the paper signal fleet.
 
-- **Win Rate**: 98% (TP1 = 100%, TP2 = 70% within 1 hour)
-- **Daily Profit**: $300/day average (manual trading results)
-- **Return Per Trade**: 30% (on $1,000 risk)
-- **Strategy**: Buy pullbacks in bullish trends using Fibonacci golden zone
-- **Timeframe**: 1h charts ONLY
-- **Symbol**: BTC/USDT ONLY (for now)
+## What it does
 
-## 🇺🇸 USA Regulatory Compliant
+- Scans **17 Kraken USD pairs** on **1h candles** every 5 minutes, with a live WebSocket feed for real-time exits between scans.
+- Finds the swing high/low (120-bar lookback), draws Fibonacci retracements, and waits for a **double-bottom in the golden zone (0.5)** followed by a reclaim of the **0.382 entry level** with volume confirmation.
+- Enters long with a stop at the **0.618** retracement; exits are scaled — **25% at each of TP1–TP4** (fib extensions), stop moved to breakeven after TP1.
+- Sizes every trade from the real bankroll: risks `PICASSO_RISK_PCT` (default 20%) of the current balance against the stop distance, with posted margin capped at what's actually free. Balance is synced from the Kraken USD cash line at startup.
 
-**MADE FOR US TRADERS**
+## Leverage: venue max, gateway-verified
 
-- ✅ **SPOT TRADING ONLY** (no futures, no derivatives)
-- ✅ **LONG POSITIONS ONLY** (no shorting)
-- ✅ **NO LEVERAGE** (100% compliant with US regulations)
-- ✅ **US EXCHANGES ONLY** (Binance US)
-- ✅ **Regulatory Compliant** for US retail traders
+Live mode rides **Kraken's own maximum leverage on every pair** — currently BTC 20x; AVAX/LTC/USDC 10x; most pairs 5x; WLD 3x. The roster caps in `SYMBOLS` apply to the paper sim only.
 
-## 🎯 The PICASSO Strategy
+One hard-won detail: Kraken's `AssetPairs` REST field `leverage_buy` **lags the real venue caps** — it reported 10x for BTC/USD while the Pro UI badged 20x and the order gateway accepted `leverage=20` (verified 2026-08-27 with validate-only orders; 21x+ rejected, proving the check is real). `VENUE_LEV_PROBES` re-probes the gateway at every live startup and falls back to the listed cap if the venue refuses — never trust the listing over the gateway.
 
-### How It Works
+## Running it
 
-**Setup Phase:**
-1. Identifies swing high and swing low (120-period lookback)
-2. Calculates Fibonacci retracement levels (for entry)
-3. Calculates Fibonacci extension levels (for take-profits)
+**Windows (the real launcher):**
+```bat
+launch_picasso.bat
+```
+The launcher kills any running Picasso first (never two processes on port 8877), sets the live environment, and opens the dashboard.
 
-**Entry Signal:**
-1. Price pulls back to "Golden Zone" (Fibonacci retracement level)
-2. Maximum 2% dip into golden zone (not a dump)
-3. Price bounces off golden zone (current close > previous close)
-4. Volume confirmation (1.5x average volume)
+> ⚠️ **The .bat must stay CRLF.** cmd.exe silently mis-parses LF-only batch files — it once ate `set PICASSO_PAPER=0` and the bot came up in paper mode while looking live.
 
-**Exit Strategy:**
-- **TP1**: [USER TO PROVIDE] Fibonacci extension - **100% hit rate**
-- **TP2**: [USER TO PROVIDE] Fibonacci extension - **70% hit within 1 hour**
-- **TP3**: [USER TO PROVIDE] Fibonacci extension
-- **TP4**: [USER TO PROVIDE] Fibonacci extension
-- **Stop Loss**: Below Fibonacci retracement level
-
-**Frequency:**
-- 3-4 setups per bullish trend
-- Each setup = high-probability winner
-
-## 💰 Lease Model (For Commercial Use)
-
-### Pricing Structure
-
-**One-Time Fee**: $100
-- Covers setup, onboarding, support
-- Paid upfront before bot access
-
-**Revenue Share**: 10% of profits
-- **BUT FIRST**: Customer recoups $100 from the 10% share
-- **THEN**: 10% profit sharing begins
-
-### How It Works
-
-**Example:**
-- Customer pays $100 upfront
-- Bot makes $500 profit in week 1
-- 10% share = $50 → Goes to customer (refund: $50/$100)
-- Bot makes $600 profit in week 2
-- 10% share = $60 → $50 to customer (refund complete!), $10 to vendor
-- All future profits = Customer keeps 90%, vendor gets 10%
-
-**Fair for Everyone:**
-- Customer gets bot that pays for itself
-- Vendor only profits after customer breaks even
-- Zero long-term risk for customer
-- Passive income for vendor
-
-## 📊 Fibonacci Levels (TO BE CONFIGURED)
-
-**⚠️ IMPORTANT: Current values are PLACEHOLDERS**
-
-The bot uses Fibonacci retracement and extension levels from standard charting tools.
-
-**You MUST configure these exact levels:**
-
-### Retracement Levels (Entry Detection)
-- **Golden Zone**: [USER TO PROVIDE] (e.g., 0.618, 0.5, etc.)
-- **Stop Loss Level**: [USER TO PROVIDE] (e.g., 0.786, 1.0, etc.)
-
-### Extension Levels (Take-Profit Targets)
-- **TP1**: [USER TO PROVIDE] (e.g., 1.0, 1.272, etc.) - 100% winner
-- **TP2**: [USER TO PROVIDE] (e.g., 1.272, 1.382, 1.414, etc.) - 70% within hour
-- **TP3**: [USER TO PROVIDE] (e.g., 1.618, 2.0, etc.)
-- **TP4**: [USER TO PROVIDE] (e.g., 2.0, 2.618, etc.)
-
-## 🛠️ Installation
-
+**Paper mode (no keys needed — public data only):**
 ```bash
-# Clone or download PICASSO bot
-cd picasso-bot
-
-# Install dependencies
-pip install ccxt pandas numpy rich
-
-# Configure API keys (will prompt on first run)
-python picasso.py
+PICASSO_PAPER=1 python picasso.py
 ```
 
-## ⚙️ Configuration
-
-### Environment Variables
-
+**Research modes:**
 ```bash
-# Fibonacci Levels (MUST BE SET!)
-export PICASSO_GOLDEN_ZONE="0.618"    # Golden zone retracement
-export PICASSO_STOP_LOSS_LEVEL="0.786"  # Stop loss retracement
-
-export PICASSO_TP1="1.0"      # TP1 extension (100% winner)
-export PICASSO_TP2="1.272"    # TP2 extension (70% within hour)
-export PICASSO_TP3="1.618"    # TP3 extension
-export PICASSO_TP4="2.0"      # TP4 extension
-
-# Risk Management
-export PICASSO_RISK_USD="1000"    # Risk per trade ($1000 proven)
-export PICASSO_MAX_DIP="2.0"      # Max dip % into golden zone
-
-# Trading Settings
-export PICASSO_SYMBOL="BTC/USDT"  # Symbol to trade
-export PICASSO_PAPER="1"          # Paper mode (1=paper, 0=live)
-export PICASSO_SCAN_INTERVAL="300"  # Scan every 5 minutes
-
-# Run bot
-python picasso.py
+python picasso.py --backtest [days] [symbol]   # replay the strategy on history
+python picasso.py --tune 90                    # grid-search vol/touch-tol params
+python picasso.py --walkforward 270            # out-of-sample validation
 ```
 
-## 📈 Usage
+## Dashboard
 
-### Paper Trading (Safe Mode - Default)
+- Full-screen Rich TUI in the terminal.
+- Web dashboard at **http://localhost:8877** — live prices, fib levels per pair, positions, risk aggregate, equity curve, trade journal (`/api/state`, `/api/trades`).
 
-**Windows:**
-```powershell
-python picasso.py
-```
+## Configuration (env vars)
 
-**Linux/macOS:**
-```bash
-python3 picasso.py
-```
+| Var | Default | Meaning |
+|---|---|---|
+| `PICASSO_PAPER` | `1` | `0` = live margin orders (real money) |
+| `PICASSO_RISK_PCT` | `20` | % of balance risked per trade |
+| `PICASSO_BALANCE` | `80.56` | Seeds `balance.json` on first run only |
+| `PICASSO_LEVERAGE` | `1` | Paper-sim global leverage (live uses venue max) |
+| `PICASSO_ENTRY` | `0.382` | Entry retracement level |
+| `PICASSO_GOLDEN_ZONE` | `0.5` | Double-bottom zone |
+| `PICASSO_STOP_LOSS` | `0.618` | Stop retracement level |
+| `PICASSO_VOL_MULT` | `1.5` | Volume confirmation multiple (tuned: `1.0`) |
+| `PICASSO_TOUCH_TOL` | `0.02` | Level touch tolerance (tuned: `0.03`) |
+| `PICASSO_MIN_RANGE` | `0.5` | Min swing range % — skips flat/stablecoin chop |
+| `PICASSO_SCAN_INTERVAL` | `300` | Seconds between scans |
+| `PICASSO_HTTP_PORT` | `8877` | Dashboard port |
 
-Bot will:
-1. Connect to Binance US
-2. Monitor BTC/USDT 1h charts
-3. Calculate Fibonacci levels dynamically
-4. Wait for pullback to golden zone
-5. Enter on bounce with volume confirmation
-6. Take profit at TP levels
-7. Track profits for lease model
+## Files
 
-### Live Trading (After Testing)
+| File | What |
+|---|---|
+| `picasso.py` | The whole bot — strategy, sizing, live orders, TUI, web server, backtest |
+| `launch_picasso.bat` | Live launcher (kill-then-start, env, dashboard) |
+| `dashboard.html` | Web dashboard |
+| `.picasso_keys.json` | Kraken API keys — **gitignored, never committed** |
+| `balance.json` / `positions.json` / `trades.csv` / `stats.json` | Runtime state — gitignored |
+| `history/` | Archived docs from the December 2025 paper/Binance-era design |
 
-```bash
-export PICASSO_PAPER="0"
-python picasso.py
-```
+## Security
 
-**⚠️ WARNING**: Only trade live after:
-- Configuring exact Fibonacci levels
-- Testing in paper mode
-- Verifying results match expectations
-- Understanding the risks
+- Keys live only in `.picasso_keys.json` (gitignored). Paper mode needs no keys at all.
+- Live order path validates margin eligibility with a `validate=True` dry-run at startup before arming.
+- The balance sync is read-only (`fetch_balance`); live closes take the realized balance from Kraken, so fees are real.
 
-## 🎨 What Makes PICASSO Different
+## Disclaimer
 
-**Simplicity = Reliability:**
-- Uses standard Fibonacci math (golden ratio, proven for centuries)
-- No complex indicators or over-optimization
-- Market structure dictates levels (dynamic, not static)
-- Robust code = fewer failure points
-
-**Proven Track Record:**
-- Manually traded for over a year
-- $300/day average profit (verifiable)
-- 98% win rate (real results, not backtest)
-- 30% return per trade (proven performance)
-
-**USA Compliance:**
-- Built specifically for US regulatory requirements
-- No leverage, no shorting, spot only
-- Hard to find USA-compliant algo bots
-
-## 🔐 Security & Risk
-
-**API Keys:**
-- Stored locally in `.picasso_keys.json`
-- Never shared or transmitted
-- Use read-only keys if possible
-- For live trading: use keys with trading permissions
-
-**Risk Management:**
-- Default $1000 risk per trade (user's proven amount)
-- Stop loss always set
-- Position sizing calculated dynamically
-- Max 2% dip into golden zone (conservative entry)
-
-**Disclaimer:**
-- Past performance does not guarantee future results
-- Cryptocurrency trading carries risk
-- Only trade with money you can afford to lose
-- This bot works in BULLISH markets only
-- Not financial advice
-
-## 📊 Profit Tracking (Lease Model)
-
-PICASSO automatically tracks:
-- Total profits generated
-- 10% revenue share
-- Customer refund progress ($0 → $100)
-- Vendor earnings (after customer recoups $100)
-- Breakeven status
-
-Stored in `license.json`:
-```json
-{
-  "customer_id": "default",
-  "initial_fee": 100.0,
-  "refund_progress": 50.0,
-  "total_profits": 500.0,
-  "vendor_earnings": 0.0,
-  "breakeven": false
-}
-```
-
-## 📁 Files
-
-- `picasso.py` - Main bot code
-- `.picasso_keys.json` - API keys (created on first run)
-- `positions.json` - Current position state
-- `trades.csv` - Trade history
-- `stats.json` - Performance statistics
-- `license.json` - Lease model tracking
-
-## 🚀 Roadmap
-
-**Phase 1** (Current):
-- ✅ Core PICASSO strategy implemented
-- ✅ Fibonacci calculation engine
-- ✅ Pullback detection logic
-- ✅ Profit tracking for lease model
-- ⏳ **WAITING: User's exact Fibonacci levels**
-
-**Phase 2** (After User Provides Levels):
-- [ ] Configure exact retracement/extension values
-- [ ] Test in paper mode
-- [ ] Verify 98% win rate performance
-- [ ] Fine-tune entry/exit logic
-
-**Phase 3** (Lease Model Deployment):
-- [ ] License key system
-- [ ] Customer onboarding flow
-- [ ] Payment integration
-- [ ] Customer dashboard
-- [ ] Admin panel
-
-**Phase 4** (Scaling):
-- [ ] Multiple symbol support (ETH, SOL, etc.)
-- [ ] Auto-detect bullish trends
-- [ ] Enhanced profit tracking
-- [ ] Performance analytics
-
-## 💡 Why "PICASSO"?
-
-Just like Pablo Picasso created masterpieces with simple, clean lines - this bot creates profits with simple, clean logic.
-
-**Simple = Beautiful = Profitable** 🎨
+Margin trading can lose more than your stake. This is the operator's personal bot running the operator's risk settings — it deliberately has **no artificial guardrails**: no 1x forcing, no paper fallbacks, no substituted risk values. Past performance guarantees nothing. Not financial advice.
 
 ---
-
-> **API keys are optional.** Paper/read-only mode uses the public REST API — no account or key required. Keys are only needed for live order execution.
-
-**⚠️ CURRENT STATUS: AWAITING USER'S EXACT FIBONACCI LEVELS**
-
-**DO NOT TRADE WITH THIS BOT YET!**
-
-The current Fibonacci values are placeholders. The bot will not achieve 98% win rate until configured with user's proven levels.
-
----
-
-**Created**: December 31, 2025
-**Based on**: Proven manual trading strategy (over 1 year, $300/day)
-**Automated by**: Claude Code
+**Born**: 2025-12-31, from a manually-traded fib pullback method · **Live on Kraken margin**: 2026-08-27 · **Automated with**: Claude Code
