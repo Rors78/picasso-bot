@@ -2,7 +2,12 @@
 title PICASSO Fibonacci Trader
 cd /d D:\PicassoBot
 
-rem Operator risk settings (paper simulation - live mode is always spot 1x)
+rem ============ LIVE MARGIN TRADING — REAL MONEY ============
+rem Operator-directed 2026-08-27 ("get the sim shit out", live margin at max
+rem roster caps). Orders are real Kraken margin orders; per-pair leverage is
+rem clamped to the venue max (BTC: Kraken caps at 10x). Set PICASSO_PAPER=1
+rem to fall back to simulation.
+set PICASSO_PAPER=0
 set PICASSO_LEVERAGE=20
 
 rem Bankroll: seeds balance.json on first run only; balance.json is the authority

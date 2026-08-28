@@ -470,6 +470,7 @@ function render(s) {
   $("mode").textContent = s.paper ? "PAPER" : "LIVE";
   $("mode").className = "badge " + (s.paper ? "b-paper" : "b-live");
   if (s.ws) $("wsb").style.display = s.ws.connected ? "" : "none";
+  $("lev").textContent = s.paper ? "LEV SIM" : "MARGIN";
   const mm = String(Math.floor(s.countdown / 60)).padStart(2, "0"), ss2 = String(s.countdown % 60).padStart(2, "0");
   $("countdown").textContent = `${mm}:${ss2}`;
   $("scanbar").style.width = (100 - s.countdown / (s.scan_interval || 300) * 100).toFixed(1) + "%";

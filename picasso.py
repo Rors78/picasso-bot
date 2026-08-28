@@ -116,14 +116,12 @@ PAPER_MODE = (os.environ.get("PICASSO_PAPER", "1") == "1")  # Default paper mode
 STARTING_BALANCE = float(os.environ.get("PICASSO_BALANCE", "80.56"))
 RISK_PCT = float(os.environ.get("PICASSO_RISK_PCT", "20"))  # % of balance risked per trade (pre margin cap)
 
-# Leverage - PAPER/BACKTEST SIMULATION ONLY.
-# Binance US is spot-only: no venue this bot may use can execute leverage,
-# so live mode is forced to 1x regardless of this setting.
-# Multiplies position size; a liquidation price (entry * (1 - 1/lev)) is
-# simulated and wipes the remaining margin if touched - checked before the stop.
+# Leverage. PAPER: simulated (size multiplied, liq at entry*(1-1/lev) wipes
+# the remaining margin, checked before the stop). LIVE: real Kraken margin -
+# orders carry the leverage param and each pair is clamped to the venue's own
+# max (VENUE_LEV, read from Kraken at startup). Operator direction 2026-08-27:
+# live margin at the roster caps ("get the sim shit out"); no 1x forcing.
 LEVERAGE = max(1.0, float(os.environ.get("PICASSO_LEVERAGE", "1")))
-if not PAPER_MODE and LEVERAGE > 1:
-    LEVERAGE = 1.0  # live = spot = 1x, always
 
 # Trading Pairs
 # SYMBOL is the backtest/tune/walkforward target; the live TUI scans SYMBOLS.
@@ -142,9 +140,16 @@ SYMBOLS = {
     "WLD/USD": 3,
 }
 
+# Venue's real max leverage per pair, read from Kraken markets at live startup.
+# Empty in paper mode (roster caps apply as-is).
+VENUE_LEV = {}
+
 def sym_leverage(sym):
     lev = SYMBOLS.get(sym)
-    return LEVERAGE if lev is None else (1.0 if not PAPER_MODE else float(lev))
+    want = LEVERAGE if lev is None else float(lev)
+    if VENUE_LEV:
+        want = min(want, VENUE_LEV.get(sym, 1.0))
+    return max(1.0, want)
 
 # Flat markets (stablecoins, dead chop) have no pullback structure - skip
 # entries when the swing range is under this % of price. Keeps USDC/USD from
@@ -531,7 +536,7 @@ def market_metrics(df, fib_levels):
 
 def build_header():
     mode = "[bold black on green] PAPER [/]" if PAPER_MODE else "[bold white on red] LIVE [/]"
-    lev = f"   [bold white on red] LEV SIM [/]" if PAPER_MODE else ""
+    lev = "   [bold white on red] LEV SIM [/]" if PAPER_MODE else "   [bold white on red] MARGIN [/]"
     return Panel(
         Align.center(
             f"[bold cyan]🎨 {APP}[/]   [white]KRAKEN · {len(SYMBOLS)} pairs · {TIMEFRAME} · "
@@ -921,7 +926,8 @@ def connect_exchange(live=True):
     Kraken's margin listing. Do not change venues without operator approval.
 
     PAPER MODE: public API only - no keys, no sandbox, no orders placed.
-    LIVE MODE: not leverage-capable in this bot; forced 1x, spot orders only.
+    LIVE MODE: real Kraken margin orders at the roster caps, clamped to the
+    venue's own per-pair max (prepare_live). Operator-directed 2026-08-27.
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     """
     keys = read_keys()
@@ -931,6 +937,71 @@ def connect_exchange(live=True):
         "enableRateLimit": True,
         "timeout": 20000,
     })
+
+# ========== LIVE EXECUTION (Kraken margin) ==========
+
+LIVE_EX = {"ex": None}   # authed client for real orders (live mode only)
+
+def min_amount(sym):
+    ex = LIVE_EX["ex"]
+    m = (getattr(ex, "markets", None) or {}).get(sym) or {}
+    return safe_float(((m.get("limits") or {}).get("amount") or {}).get("min"))
+
+def live_order(sym, side, amount, lev):
+    """Place a real Kraken market order. leverage>1 rides the margin book;
+    selling with the same leverage closes that pair's margin position (the
+    bot holds at most one per pair). Returns (filled, avg_price). Raises on
+    failure — callers must change NO state when an order didn't happen."""
+    ex = LIVE_EX["ex"]
+    amt = float(ex.amount_to_precision(sym, amount))
+    params = {"leverage": int(lev)} if lev > 1 else {}
+    o = ex.create_order(sym, "market", side, amt, None, params)
+    try:
+        time.sleep(0.7)   # let the fill settle before reading it back
+        o = ex.fetch_order(o["id"], sym) or o
+    except Exception:
+        pass              # fill info is best-effort; the order itself stands
+    filled = safe_float(o.get("filled")) or amt
+    avg = safe_float(o.get("average")) or safe_float(o.get("price"))
+    return filled, avg
+
+def refresh_balance_live():
+    """After a live close, Kraken is the balance authority (fees, slippage,
+    rollover are all in there). Failures log — never silently stale."""
+    try:
+        totals = (LIVE_EX["ex"].fetch_balance() or {}).get("total") or {}
+        usd = safe_float(totals.get("USD"))
+        if usd > 0:
+            save_json(BALANCE_FILE, {"balance": usd, "updated": now_str(), "source": "kraken-live"})
+    except Exception as e:
+        log_event(f"[red]❌ live balance refresh failed: {str(e)[:80]}[/red]")
+
+def prepare_live(ex):
+    """Arm live margin trading: read the venue's real per-pair leverage caps,
+    dry-run a margin order (validate=True places nothing) to prove the account
+    is margin-eligible, and print the effective leverage table. Returns False
+    if live cannot be armed — the caller must not trade."""
+    LIVE_EX["ex"] = ex
+    for sym in SYMBOLS:
+        m = (ex.markets or {}).get(sym) or {}
+        lb = (m.get("info") or {}).get("leverage_buy") or []
+        VENUE_LEV[sym] = float(max([int(x) for x in lb], default=1))
+    try:
+        ex.create_order("BTC/USD", "market", "buy", 0.0001, None,
+                        {"leverage": 5, "validate": True})
+    except Exception as e:
+        console.print(f"[bold white on red] ✗ MARGIN DRY-RUN REFUSED — live NOT armed: {str(e)[:120]} [/]")
+        return False
+    t = Table(box=box.SIMPLE, border_style="red", title="LIVE MARGIN — effective leverage")
+    t.add_column("Pair"); t.add_column("Roster", justify="right")
+    t.add_column("Venue", justify="right"); t.add_column("Effective", justify="right")
+    for sym in SYMBOLS:
+        cap = SYMBOLS[sym] if SYMBOLS[sym] is not None else LEVERAGE
+        eff = sym_leverage(sym)
+        clamp = " [yellow]← venue clamp[/]" if eff < float(cap) else ""
+        t.add_row(sym, f"{float(cap):.0f}x", f"{VENUE_LEV[sym]:.0f}x", f"[bold]{eff:.0f}x[/]{clamp}")
+    console.print(t)
+    return True
 
 # ========== BACKTEST ==========
 
@@ -1579,18 +1650,30 @@ def manage_position(sym, price, state):
         entry = position["entry"]
         lev = position.get("leverage", 1.0)
 
-        # Liquidation first (leveraged sims)
+        # Liquidation guard first. Paper: sim wipes the margin. Live: market-
+        # close NOW, before Kraken's own liquidation engine does it with
+        # penalty fees on top.
         liq = position.get("liq", 0.0)
         if lev > 1 and liq > 0 and price <= liq:
-            margin = entry * position["remaining"] / lev
-            realized = -margin
+            fill_px = liq
+            if not PAPER_MODE:
+                try:
+                    sold, avg = live_order(sym, "sell", position["remaining"], lev)
+                    if avg > 0:
+                        fill_px = avg
+                except Exception as e:
+                    log_event(f"[bold red]❌ {sym} LIQ CLOSE FAILED — retrying next tick: {str(e)[:80]}[/bold red]")
+                    return
+                realized = (fill_px - entry) * position["remaining"]
+            else:
+                realized = -(entry * position["remaining"] / lev)   # sim: margin gone
             total = position.get("realized", 0.0) + realized
             state["session_pl"] += realized
-            record_trade(sym, "LIQUIDATED", liq, position["remaining"], realized)
+            record_trade(sym, "LIQUIDATED", fill_px, position["remaining"], realized)
             state["stats"] = update_stats(total)
-            update_balance(total)
+            update_balance(total) if PAPER_MODE else refresh_balance_live()
             state["closed"].append({"when": now_str()[5:16], "sym": base, "exit": "LIQ", "pnl": total})
-            log_event(f"[bold white on red]💀 {sym} LIQUIDATED at {fmt_price(liq)} — margin wiped: ${realized:,.2f}[/bold white on red]")
+            log_event(f"[bold white on red]💀 {sym} LIQUIDATED at {fmt_price(fill_px)} — ${realized:,.2f}[/bold white on red]")
             play_alert("liq")
             position = ss["position"] = None
             save_positions(state)
@@ -1600,16 +1683,27 @@ def manage_position(sym, price, state):
             for i in (1, 2, 3, 4):
                 tp = position[f"tp{i}"]
                 if price >= tp and not position.get(f"tp{i}_hit"):
-                    position[f"tp{i}_hit"] = True
                     slice_size = min(position["size"] * 0.25 if i < 4 else position["remaining"],
                                      position["remaining"])
-                    realized = (tp - entry) * slice_size
+                    fill_px = tp
+                    if not PAPER_MODE:
+                        try:
+                            sold, avg = live_order(sym, "sell", slice_size, lev)
+                            if sold > 0:
+                                slice_size = min(sold, position["remaining"])
+                            if avg > 0:
+                                fill_px = avg
+                        except Exception as e:
+                            log_event(f"[bold red]❌ {sym} TP{i} SELL FAILED — retrying next tick: {str(e)[:80]}[/bold red]")
+                            break   # not marked hit; a later tick retries
+                    position[f"tp{i}_hit"] = True
+                    realized = (fill_px - entry) * slice_size
                     position["remaining"] -= slice_size
                     position["realized"] = position.get("realized", 0.0) + realized
                     state["session_pl"] += realized
                     track_trade_profit(realized)
-                    record_trade(sym, f"TP{i}", tp, slice_size, realized)
-                    log_event(f"[bold green]{'🎯' * i} {sym} TP{i} — sold {slice_size:,.4f} {base} at {fmt_price(tp)}, banked ${realized:,.2f}[/bold green]")
+                    record_trade(sym, f"TP{i}", fill_px, slice_size, realized)
+                    log_event(f"[bold green]{'🎯' * i} {sym} TP{i} — sold {slice_size:,.4f} {base} at {fmt_price(fill_px)}, banked ${realized:,.2f}[/bold green]")
                     play_alert("tp")
                     if i == 1 and position["stop_loss"] < entry:
                         position["stop_loss"] = entry
@@ -1619,7 +1713,7 @@ def manage_position(sym, price, state):
                         total = position["realized"]
                         log_event(f"[bold dark_orange]🎨 {sym} COMPLETE — trade banked ${total:,.2f}[/bold dark_orange]")
                         state["stats"] = update_stats(total)
-                        update_balance(total)
+                        update_balance(total) if PAPER_MODE else refresh_balance_live()
                         state["closed"].append({"when": now_str()[5:16], "sym": base, "exit": "TP4", "pnl": total})
                         position = ss["position"] = None
                         save_positions(state)
@@ -1628,12 +1722,21 @@ def manage_position(sym, price, state):
         # Stop check (may be at breakeven after TP1)
         if position and price <= position["stop_loss"]:
             stop_price = position["stop_loss"]
-            realized = (stop_price - entry) * position["remaining"]
+            fill_px = stop_price
+            if not PAPER_MODE:
+                try:
+                    sold, avg = live_order(sym, "sell", position["remaining"], lev)
+                    if avg > 0:
+                        fill_px = avg
+                except Exception as e:
+                    log_event(f"[bold red]❌ {sym} STOP SELL FAILED — retrying next tick: {str(e)[:80]}[/bold red]")
+                    return
+            realized = (fill_px - entry) * position["remaining"]
             total = position.get("realized", 0.0) + realized
             state["session_pl"] += realized
-            record_trade(sym, "STOP", stop_price, position["remaining"], realized)
+            record_trade(sym, "STOP", fill_px, position["remaining"], realized)
             state["stats"] = update_stats(total)
-            update_balance(total)
+            update_balance(total) if PAPER_MODE else refresh_balance_live()
             label = "BREAKEVEN STOP" if stop_price >= entry else "STOP LOSS"
             log_event(f"[bold red]🛑 {sym} {label} at {fmt_price(stop_price)} — trade total ${total:,.2f}[/bold red]")
             state["closed"].append({"when": now_str()[5:16], "sym": base,
@@ -1682,6 +1785,22 @@ def scan_symbol(ex, sym, state):
                           f"(balance ${balance:,.2f}, ${avail:,.2f} free) — skipped[/yellow]")
                 return
 
+            if not PAPER_MODE:
+                mn = min_amount(sym)
+                if mn and position_size < mn:
+                    log_event(f"[yellow]⚠ {sym} size {position_size:.6f} under venue minimum {mn} — skipped[/yellow]")
+                    return
+                try:
+                    filled, avg = live_order(sym, "buy", position_size, lev)
+                    if filled <= 0:
+                        raise RuntimeError("zero fill reported")
+                    position_size = filled
+                    if avg > 0:
+                        entry_price = avg   # book the real fill, not the level
+                except Exception as e:
+                    log_event(f"[bold red]❌ {sym} LIVE ENTRY FAILED — no position taken: {str(e)[:80]}[/bold red]")
+                    return
+
             ss["position"] = {
                 "entry": entry_price,
                 "size": position_size,
@@ -1718,7 +1837,13 @@ def main():
         console.print(f"[red]❌ Exchange connection failed: {e}[/red]")
         return
 
-    # Read-only keys present? Make the paper bankroll track the real account.
+    if not PAPER_MODE:
+        if not prepare_live(ex):
+            console.print("[red]Fix the account/margin issue and relaunch. Not trading blind.[/red]")
+            return
+        log_event("[bold white on red]🔴 LIVE MARGIN ARMED — real money, real leverage, venue-clamped caps[/bold white on red]")
+
+    # Keys present? Make the bankroll track the real account.
     sync_balance_from_kraken()
 
     # Load open positions (migrate legacy single-position and pre-scaled formats)
@@ -1741,7 +1866,7 @@ def main():
              "stats": load_json(STATS_FILE, {"trades": 0, "wins": 0, "losses": 0, "gross_pl": 0.0})}
 
     if PAPER_MODE:
-        log_event("[bold red]⚠ Leverage SIMULATION per Kraken margin caps — paper only; live is 1x[/bold red]")
+        log_event("[bold red]⚠ Leverage SIMULATION per Kraken margin caps — paper mode[/bold red]")
     log_event(f"[cyan]PICASSO online — scanning {len(SYMBOLS)} Kraken pairs on {TIMEFRAME}[/cyan]")
     start_web(state)
     start_ws_feed(state)
