@@ -863,6 +863,39 @@ def public_exchange():
     """Kraken public client - the live data venue."""
     return ccxt.kraken({"enableRateLimit": True, "timeout": 20000})
 
+def sync_balance_from_kraken():
+    """Pull the real Kraken USD cash balance and make it the paper bankroll.
+
+    Read-only API keys in .picasso_keys.json are enough — this only calls
+    fetch_balance, never places orders. Runs at startup, and never while
+    paper positions are open (a sync would clobber their compounding).
+    Every failure path logs; a silent sync that didn't happen must not
+    look like one that did.
+    """
+    if not KEYS_FILE.exists():
+        return None
+    keys = load_json(KEYS_FILE, {})
+    if not keys.get("apiKey") or not keys.get("secret"):
+        return None
+    try:
+        ex = ccxt.kraken({"apiKey": keys["apiKey"], "secret": keys["secret"],
+                          "enableRateLimit": True, "timeout": 20000})
+        totals = (ex.fetch_balance() or {}).get("total") or {}
+        usd = safe_float(totals.get("USD"))
+        if usd <= 0:
+            log_event("[yellow]⚠ Kraken keys valid but USD cash is 0 — bankroll unchanged[/yellow]")
+            return None
+        if load_json(POS_FILE, {}) or {}:
+            log_event(f"[yellow]⚠ Kraken shows ${usd:,.2f} but paper positions are open — "
+                      f"sync skipped to protect compounding[/yellow]")
+            return None
+        save_json(BALANCE_FILE, {"balance": usd, "updated": now_str(), "source": "kraken"})
+        log_event(f"[bold gold1]💰 Bankroll synced from Kraken: ${usd:,.2f}[/bold gold1]")
+        return usd
+    except Exception as e:
+        log_event(f"[red]❌ Kraken balance sync failed: {str(e)[:90]}[/red]")
+        return None
+
 # Kraken's public OHLC endpoint returns at most ~720 candles (~30 days of 1h)
 # no matter what `since` you pass. Deep history for backtest/tune/walkforward
 # falls back to Binance US candles (same assets, near-identical prices) with
@@ -1663,6 +1696,9 @@ def main():
     except Exception as e:
         console.print(f"[red]❌ Exchange connection failed: {e}[/red]")
         return
+
+    # Read-only keys present? Make the paper bankroll track the real account.
+    sync_balance_from_kraken()
 
     # Load open positions (migrate legacy single-position and pre-scaled formats)
     positions = load_json(POS_FILE, {}) or {}
