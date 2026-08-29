@@ -502,18 +502,28 @@ def update_balance(delta):
     save_json(BALANCE_FILE, {"balance": bal, "updated": now_str()})
     return bal
 
+# Kraken charges the taker fee (≤0.40%) plus the margin-open fee (0.02%) on
+# NOTIONAL, so at leverage the fee is lev × ~0.42% of the posted margin. A cap
+# that posts 100% of free balance as margin can never pay its own fee — the
+# 2026-08-28 BTC entry (a full $80.58 margin on an $80.58 account at 20x, ~$6
+# of fees due) bounced at the venue for exactly this. Reserve lev-scaled
+# headroom, padded above the worst fee tier.
+FEE_HEADROOM_PER_1X = 0.005
+
 def balance_sized(entry, stop, lev, balance, avail_margin):
     """Size a trade from the bankroll: risk RISK_PCT% of balance, then cap the
-    posted margin at what's actually free. Returns (size, margin) — (0, 0) if
-    there's no meaningful margin left to post."""
+    posted margin at what's actually free minus fee headroom (fees are charged
+    on notional = margin × lev, see FEE_HEADROOM_PER_1X). Returns
+    (size, margin) — (0, 0) if there's no meaningful margin left to post."""
     if avail_margin < 0.50 or entry <= stop:
         return 0.0, 0.0
     risk = balance * RISK_PCT / 100.0
     size = calculate_position_size(entry, stop, risk) * lev
     margin = entry * size / lev
-    if margin > avail_margin:
-        margin = avail_margin
-        size = avail_margin * lev / entry
+    cap = avail_margin / (1.0 + lev * FEE_HEADROOM_PER_1X)
+    if margin > cap:
+        margin = cap
+        size = cap * lev / entry
     return size, margin
 
 # ========== DISPLAY (full-screen Rich TUI) ==========
@@ -523,6 +533,14 @@ EVENTS = deque(maxlen=100)
 def log_event(msg):
     """Append a timestamped line to the on-screen event log."""
     EVENTS.appendleft(f"[dim]{now_str()}[/dim] {msg}")
+
+def err_text(e, n=160):
+    """Exception text safe for log_event: Kraken errors carry JSON like
+    {"error":["EOrder:Insufficient funds"]} whose square brackets read as Rich
+    markup and get stripped — the 2026-08-28 missed BTC entry logged as
+    'kraken {"error":}' because of exactly this. Swap brackets for parens so
+    the venue's actual answer survives both the TUI and the web event feed."""
+    return str(e).replace("[", "(").replace("]", ")")[:n]
 
 def market_metrics(df, fib_levels):
     """Display-only snapshot of the entry conditions (mirrors check_pullback_entry)."""
@@ -906,7 +924,7 @@ def sync_balance_from_kraken():
         log_event(f"[bold gold1]💰 Bankroll synced from Kraken: ${usd:,.2f}[/bold gold1]")
         return usd
     except Exception as e:
-        log_event(f"[red]❌ Kraken balance sync failed: {str(e)[:90]}[/red]")
+        log_event(f"[red]❌ Kraken balance sync failed: {err_text(e)}[/red]")
         return None
 
 # Kraken's public OHLC endpoint returns at most ~720 candles (~30 days of 1h)
@@ -982,7 +1000,7 @@ def refresh_balance_live():
         if usd > 0:
             save_json(BALANCE_FILE, {"balance": usd, "updated": now_str(), "source": "kraken-live"})
     except Exception as e:
-        log_event(f"[red]❌ live balance refresh failed: {str(e)[:80]}[/red]")
+        log_event(f"[red]❌ live balance refresh failed: {err_text(e)}[/red]")
 
 def prepare_live(ex):
     """Arm live margin trading: read the venue's real per-pair leverage caps,
@@ -1010,12 +1028,12 @@ def prepare_live(ex):
                       f"(AssetPairs listing lags at {listed:.0f}x)[/bold red]")
         except Exception as e:
             log_event(f"[yellow]⚠ {sym} {lev}x probe refused by gateway — keeping "
-                      f"{VENUE_LEV[sym]:.0f}x: {str(e)[:60]}[/yellow]")
+                      f"{VENUE_LEV[sym]:.0f}x: {err_text(e)}[/yellow]")
     try:
         ex.create_order("BTC/USD", "market", "buy", 0.0001, None,
                         {"leverage": 5, "validate": True})
     except Exception as e:
-        console.print(f"[bold white on red] ✗ MARGIN DRY-RUN REFUSED — live NOT armed: {str(e)[:120]} [/]")
+        console.print(f"[bold white on red] ✗ MARGIN DRY-RUN REFUSED — live NOT armed: {err_text(e)} [/]")
         return False
     t = Table(box=box.SIMPLE, border_style="red", title="LIVE MARGIN — effective leverage")
     t.add_column("Pair"); t.add_column("Roster", justify="right")
@@ -1290,7 +1308,7 @@ def run_backtest_all(days=60):
                 t["sym"] = sym
             all_trades.extend(trades)
         except Exception as e:
-            rows.append({"sym": sym, "err": str(e)[:60]})
+            rows.append({"sym": sym, "err": err_text(e)})
         finally:
             LEVERAGE = saved_lev
 
@@ -1687,7 +1705,7 @@ def manage_position(sym, price, state):
                     if avg > 0:
                         fill_px = avg
                 except Exception as e:
-                    log_event(f"[bold red]❌ {sym} LIQ CLOSE FAILED — retrying next tick: {str(e)[:80]}[/bold red]")
+                    log_event(f"[bold red]❌ {sym} LIQ CLOSE FAILED — retrying next tick: {err_text(e)}[/bold red]")
                     return
                 realized = (fill_px - entry) * position["remaining"]
             else:
@@ -1719,7 +1737,7 @@ def manage_position(sym, price, state):
                             if avg > 0:
                                 fill_px = avg
                         except Exception as e:
-                            log_event(f"[bold red]❌ {sym} TP{i} SELL FAILED — retrying next tick: {str(e)[:80]}[/bold red]")
+                            log_event(f"[bold red]❌ {sym} TP{i} SELL FAILED — retrying next tick: {err_text(e)}[/bold red]")
                             break   # not marked hit; a later tick retries
                     position[f"tp{i}_hit"] = True
                     realized = (fill_px - entry) * slice_size
@@ -1754,7 +1772,7 @@ def manage_position(sym, price, state):
                     if avg > 0:
                         fill_px = avg
                 except Exception as e:
-                    log_event(f"[bold red]❌ {sym} STOP SELL FAILED — retrying next tick: {str(e)[:80]}[/bold red]")
+                    log_event(f"[bold red]❌ {sym} STOP SELL FAILED — retrying next tick: {err_text(e)}[/bold red]")
                     return
             realized = (fill_px - entry) * position["remaining"]
             total = position.get("realized", 0.0) + realized
@@ -1823,7 +1841,7 @@ def scan_symbol(ex, sym, state):
                     if avg > 0:
                         entry_price = avg   # book the real fill, not the level
                 except Exception as e:
-                    log_event(f"[bold red]❌ {sym} LIVE ENTRY FAILED — no position taken: {str(e)[:80]}[/bold red]")
+                    log_event(f"[bold red]❌ {sym} LIVE ENTRY FAILED — no position taken: {err_text(e)}[/bold red]")
                     return
 
             ss["position"] = {
