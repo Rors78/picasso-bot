@@ -2,12 +2,13 @@
 title PICASSO Fibonacci Trader
 cd /d D:\PicassoBot
 
-rem ============ LIVE MARGIN TRADING — REAL MONEY ============
-rem Operator-directed 2026-08-27 ("get the sim shit out", live margin at max
-rem roster caps). Orders are real Kraken margin orders; per-pair leverage is
-rem clamped to the venue max (BTC: Kraken caps at 10x). Set PICASSO_PAPER=1
-rem to fall back to simulation.
-set PICASSO_PAPER=0
+rem ============ PAPER MODE — operator pulled the API keys 2026-08-29 ============
+rem "it is not ready yet." Keys revoked at Kraken (EAPI:Invalid key verified),
+rem so live orders are impossible regardless of this flag. When re-armed:
+rem new keys into .picasso_keys.json, set PICASSO_PAPER=0, relaunch. Live mode
+rem places real Kraken margin orders at the venue-max leverage per pair
+rem (BTC 20x, gateway-verified — the AssetPairs listing lags, picasso.py probes).
+set PICASSO_PAPER=1
 set PICASSO_LEVERAGE=20
 
 rem Bankroll: seeds balance.json on first run only; balance.json is the authority
